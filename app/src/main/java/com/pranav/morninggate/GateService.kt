@@ -36,7 +36,12 @@ import kotlin.math.sqrt
 
 // ---------- snapshot types the gate screen renders ----------
 
-data class CritAction(val label: String, val pkg: String?, val tapTag: Boolean)
+data class CritAction(
+    val label: String,
+    val pkg: String?,
+    val tapTag: Boolean,
+    val scan: Boolean = false
+)
 
 data class CritView(
     val index: Int,
@@ -64,7 +69,7 @@ data class GateSnapshot(
 
 /**
  * Runs while the morning gate is active: shows the gate overlay, tracks
- * verification progress (dwell / steps / NFC / app time) and releases the
+ * verification progress (dwell / steps / NFC / QR / barcode / app time) and releases the
  * phone once every task is done, when the window ends, or after the tap escape.
  */
 class GateService : Service() {
@@ -833,11 +838,24 @@ class GateService : Service() {
         if (hasPendingSteps() && !hasActivityPermission()) {
             sb.append("Physical activity permission is missing — steps checks can't complete.\n")
         }
+        if (hasPendingScan() && !hasCameraPermission()) {
+            sb.append("Camera permission is missing — QR / barcode checks can't complete.\n")
+        }
         warningCache = sb.toString().trim().ifEmpty { null }
     }
 
     private fun hasActivityPermission(): Boolean =
         checkSelfPermission(android.Manifest.permission.ACTIVITY_RECOGNITION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasPendingScan(): Boolean = Gate.tasks.any { t ->
+        t.criteria.withIndex().any { (i, c) ->
+            (c.type == CType.QR || c.type == CType.BARCODE) && !Gate.isDone(t.id, i)
+        }
+    }
+
+    private fun hasCameraPermission(): Boolean =
+        checkSelfPermission(android.Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
     fun snapshot(): GateSnapshot {
@@ -867,8 +885,16 @@ class GateService : Service() {
                             "NFC tag · tap the bound tag"
                         }
                     }
-                    CType.QR -> if (done) "QR · done" else "QR · scanning comes in the next build"
-                    CType.BARCODE -> if (done) "Barcode · done" else "Barcode · scanning comes in the next build"
+                    CType.QR -> if (done) "QR · done" else {
+                        actions.add(CritAction("Scan QR", null, false, true))
+                        if (c.payload.isBlank()) "QR · not set — the first scan binds it"
+                        else "QR · scan the bound code"
+                    }
+                    CType.BARCODE -> if (done) "Barcode · done" else {
+                        actions.add(CritAction("Scan barcode", null, false, true))
+                        if (c.payload.isBlank()) "Barcode · not set — the first scan binds it"
+                        else "Barcode · scan the bound code"
+                    }
                     CType.APP_TIME -> if (done) "App time · done" else {
                         val mins = (Gate.appTimeMs(t.id, i) / 60_000L).toInt()
                         c.packages.take(2).forEach { actions.add(CritAction("Open ${Apps.label(this, it)}", it, false)) }

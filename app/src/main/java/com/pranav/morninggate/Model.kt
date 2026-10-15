@@ -4,7 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** What a criterion checks. QR / BARCODE scanning lands in the next build. */
+/** What a criterion checks. */
 enum class CType {
     DWELL,
     STEPS,
@@ -119,8 +119,8 @@ object Model {
         CType.DWELL -> "${c.minutes} min phone-away"
         CType.STEPS -> "${c.steps} steps within ${c.windowMin} min"
         CType.NFC -> if (c.tagId.isBlank()) "NFC tag (not bound)" else "NFC tag"
-        CType.QR -> if (c.payload.isBlank()) "QR code (not set)" else "QR code"
-        CType.BARCODE -> if (c.payload.isBlank()) "barcode (not set)" else "barcode"
+        CType.QR -> if (c.payload.isBlank()) "QR code (not set)" else "QR code · ${shortPay(c.payload)}"
+        CType.BARCODE -> if (c.payload.isBlank()) "barcode (not set)" else "barcode · ${shortPay(c.payload)}"
         CType.APP_TIME -> "${c.minutes} min in " +
             (if (c.packages.isEmpty()) "(no app chosen)"
             else c.packages.joinToString(", ") { Apps.label(context, it) })
@@ -129,11 +129,14 @@ object Model {
     fun summary(context: Context, task: Task): String =
         task.criteria.joinToString("  +  ") { critSummary(context, it) }
 
-    /** Quick-add presets. NFC criteria start unbound; bind a tag during setup. */
+    private fun shortPay(s: String): String = if (s.length <= 28) s else s.take(28) + "…"
+
+    /** Quick-add presets. NFC / code criteria start unbound; bind one during setup. */
     fun presets(): List<Pair<String, List<Criterion>>> = listOf(
         "Bath" to listOf(Criterion(CType.NFC), Criterion(CType.DWELL, minutes = 12)),
         "Brush teeth" to listOf(Criterion(CType.DWELL, minutes = 2)),
         "Meds" to listOf(Criterion(CType.NFC), Criterion(CType.DWELL, minutes = 1)),
+        "Meds (scan)" to listOf(Criterion(CType.BARCODE), Criterion(CType.DWELL, minutes = 1)),
         "Walk" to listOf(Criterion(CType.STEPS, steps = 300, windowMin = 5)),
         "Study" to listOf(Criterion(CType.APP_TIME, minutes = 25))
     )

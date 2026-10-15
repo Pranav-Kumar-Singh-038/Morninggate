@@ -16,9 +16,15 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.NFC" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <uses-feature
         android:name="android.hardware.nfc"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.camera.any"
         android:required="false" />
 
     <queries>
@@ -59,6 +65,12 @@
             android:exported="false"
             android:label="Tap NFC tag"
             android:launchMode="singleTop" />
+
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:label="Scan code"
+            android:screenOrientation="portrait" />
 
         <service
             android:name=".GateService"

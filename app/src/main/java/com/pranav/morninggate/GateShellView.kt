@@ -325,16 +325,22 @@ class GateShellView(context: Context) : FrameLayout(context) {
                         actionsRow.addView(Button(context).apply {
                             text = a.label
                             setOnClickListener {
-                                if (a.tapTag) {
-                                    GateService.launchAux(
+                                when {
+                                    a.scan -> GateService.launchAux(
+                                        context,
+                                        Intent(context, ScanActivity::class.java)
+                                            .putExtra(ScanActivity.EXTRA_MODE, ScanActivity.MODE_USE)
+                                            .putExtra(ScanActivity.EXTRA_TASK_ID, t.id)
+                                            .putExtra(ScanActivity.EXTRA_INDEX, c.index)
+                                    )
+                                    a.tapTag -> GateService.launchAux(
                                         context,
                                         Intent(context, TapActivity::class.java)
                                             .putExtra(TapActivity.EXTRA_MODE, TapActivity.MODE_USE)
                                             .putExtra(TapActivity.EXTRA_TASK_ID, t.id)
                                             .putExtra(TapActivity.EXTRA_INDEX, c.index)
                                     )
-                                } else if (a.pkg != null) {
-                                    if (!Apps.launch(context, a.pkg)) {
+                                    a.pkg != null -> if (!Apps.launch(context, a.pkg)) {
                                         Logx.add("launch failed: ${a.pkg}")
                                     }
                                 }

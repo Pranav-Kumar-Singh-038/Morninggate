@@ -314,6 +314,9 @@ class MainActivity : Activity() {
         addPerm("NFC reader (tag checks)", Checks.isNfcEnabled(this)) {
             startActivity(Checks.nfcSettingsIntent())
         }
+        addPerm("Camera (QR / barcode)", hasCamera()) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), 102)
+        }
     }
 
     private fun addPerm(name: String, ok: Boolean, action: () -> Unit) {
@@ -347,6 +350,9 @@ class MainActivity : Activity() {
 
     private fun hasActivity(): Boolean = Build.VERSION.SDK_INT < 29 ||
         checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasCamera(): Boolean =
+        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     private fun ignoringBattery(): Boolean {
         val pm = getSystemService(PowerManager::class.java) ?: return false

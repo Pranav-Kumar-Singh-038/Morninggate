@@ -29,7 +29,13 @@ class TaskEditActivity : Activity() {
         const val EXTRA_TASK_ID = "task_id"
         private const val REQ_NFC = 21
         private const val REQ_APPS = 22
+        private const val REQ_SCAN = 23
         private const val MAX_CHECKS = 6
+        private const val KEY_NAME = "edit_name"
+        private const val KEY_DRAFTS = "edit_drafts"
+        private const val KEY_PENDING_NFC = "edit_pending_nfc"
+        private const val KEY_PENDING_APPS = "edit_pending_apps"
+        private const val KEY_PENDING_SCAN = "edit_pending_scan"
     }
 
     private var taskId: String? = null
@@ -38,6 +44,7 @@ class TaskEditActivity : Activity() {
     private val drafts = ArrayList<Draft>()
     private var pendingNfc = -1
     private var pendingApps = -1
+    private var pendingScan = -1
 
     private inner class Draft(var crit: Criterion) {
         var minutesEdit: EditText? = null
@@ -65,11 +72,38 @@ class TaskEditActivity : Activity() {
 
         taskId = intent.getStringExtra(EXTRA_TASK_ID)
         val existing = Gate.tasks.firstOrNull { it.id == taskId }
-        if (existing != null) {
+
+        // Survive recreation (rotation, memory) with the in-progress edits intact.
+        val restored = savedInstanceState?.let { saved ->
+            Model.tasksFromJson(saved.getString(KEY_DRAFTS)).firstOrNull()?.criteria
+        }
+        if (restored != null) {
+            drafts.addAll(restored.map { Draft(it) })
+        } else if (existing != null) {
             drafts.addAll(existing.criteria.map { Draft(it) })
         }
+
         setContentView(buildUi(existing))
+        if (restored != null) {
+            nameEdit.setText(savedInstanceState.getString(KEY_NAME).orEmpty())
+            pendingNfc = savedInstanceState.getInt(KEY_PENDING_NFC, -1)
+            pendingApps = savedInstanceState.getInt(KEY_PENDING_APPS, -1)
+            pendingScan = savedInstanceState.getInt(KEY_PENDING_SCAN, -1)
+        }
         rebuildCrits()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        saveDraftValues()
+        outState.putString(KEY_NAME, nameEdit.text.toString())
+        outState.putString(
+            KEY_DRAFTS,
+            Model.tasksToJson(listOf(Task("draft", "", drafts.map { it.crit })))
+        )
+        outState.putInt(KEY_PENDING_NFC, pendingNfc)
+        outState.putInt(KEY_PENDING_APPS, pendingApps)
+        outState.putInt(KEY_PENDING_SCAN, pendingScan)
     }
 
     // ---------------- UI ----------------
@@ -119,6 +153,10 @@ class TaskEditActivity : Activity() {
         addRow2.addView(addButton("NFC tag") { addCriterion(Criterion(CType.NFC)) }, weight())
         addRow2.addView(addButton("App time") { addCriterion(Criterion(CType.APP_TIME, minutes = 25)) }, weight())
         col.addView(addRow2)
+        val addRow3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        addRow3.addView(addButton("QR code") { addCriterion(Criterion(CType.QR)) }, weight())
+        addRow3.addView(addButton("Barcode") { addCriterion(Criterion(CType.BARCODE)) }, weight())
+        col.addView(addRow3)
         val alp = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -126,7 +164,7 @@ class TaskEditActivity : Activity() {
         alp.topMargin = dp(6)
         col.addView(
             TextView(this).apply {
-                text = "QR and barcode checks arrive in the next build."
+                text = "Codes work best when they live where the task happens — mirror, fridge, gym locker."
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                 setTextColor(0xFF5A6472.toInt())
             },
@@ -242,7 +280,31 @@ class TaskEditActivity : Activity() {
                     }
                 }, btnLp())
             }
-            else -> card.addView(statusLine("Coming in the next build."))
+            CType.QR, CType.BARCODE -> {
+                d.statusView = statusLine(
+                    if (d.crit.payload.isBlank()) "No code bound yet — the first scan fills it in."
+                    else "Bound: " + d.crit.payload.take(48) +
+                        (if (d.crit.payload.length > 48) "…" else "")
+                )
+                card.addView(d.statusView)
+                card.addView(Button(this).apply {
+                    text = if (d.crit.payload.isBlank()) "Scan to bind" else "Scan again"
+                    setOnClickListener {
+                        saveDraftValues()
+                        pendingScan = i
+                        startActivityForResult(
+                            Intent(this@TaskEditActivity, ScanActivity::class.java)
+                                .putExtra(ScanActivity.EXTRA_MODE, ScanActivity.MODE_BIND)
+                                .putExtra(
+                                    ScanActivity.EXTRA_KIND,
+                                    if (d.crit.type == CType.QR) ScanActivity.KIND_QR
+                                    else ScanActivity.KIND_BARCODE
+                                ),
+                            REQ_SCAN
+                        )
+                    }
+                }, btnLp())
+            }
         }
         return card
     }
@@ -340,6 +402,14 @@ class TaskEditActivity : Activity() {
                 drafts.getOrNull(pendingApps)?.let { it.crit = it.crit.copy(packages = pkgs) }
                 pendingApps = -1
                 rebuildCrits()
+            }
+            REQ_SCAN -> {
+                val payload = data?.getStringExtra(ScanActivity.EXTRA_PAYLOAD) ?: return
+                saveDraftValues()
+                drafts.getOrNull(pendingScan)?.let { it.crit = it.crit.copy(payload = payload) }
+                pendingScan = -1
+                rebuildCrits()
+                toast("Code bound")
             }
         }
     }

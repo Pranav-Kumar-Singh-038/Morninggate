@@ -11,8 +11,8 @@ android {
         applicationId = "com.pranav.morninggate"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 3
+        versionName = "0.3"
     }
 
     buildTypes {
@@ -33,5 +33,13 @@ android {
 }
 
 dependencies {
-    // Intentionally framework-only: no external dependencies.
+    // Still fully offline at runtime: CameraX reads frames locally and ZXing
+    // decodes them on-device. No INTERNET permission, no network calls.
+    val camerax = "1.4.1"
+    implementation("androidx.camera:camera-core:$camerax")
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
+    implementation("androidx.activity:activity:1.9.3")
+    implementation("com.google.zxing:core:3.5.3")
 }
