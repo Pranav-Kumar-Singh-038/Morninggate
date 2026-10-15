@@ -730,7 +730,9 @@ class GateService : Service() {
 
     private fun pruneSamples() {
         val cutoff = SystemClock.elapsedRealtime() - maxStepWindowMs() - 10_000L
-        while (stepSamples.size > 1 && stepSamples.peekFirst()[0] < cutoff) {
+        while (stepSamples.size > 1) {
+            val first = stepSamples.peekFirst() ?: break
+            if (first[0] >= cutoff) break
             stepSamples.removeFirst()
         }
     }
@@ -793,8 +795,12 @@ class GateService : Service() {
     }
 
     private fun releaseToday() {
-        Prefs.releaseUntilMs = ScheduleEngine.windowEndMs()
-        Logx.add("released for today (escape)")
+        if (ScheduleEngine.isInWindow()) {
+            Prefs.releaseUntilMs = ScheduleEngine.windowEndMs()
+            Logx.add("released for today (escape)")
+        } else {
+            Logx.add("preview ended (escape)")
+        }
         ScheduleEngine.cancelHeartbeat(this)
         ScheduleEngine.scheduleNext(this)
         shutdown()
