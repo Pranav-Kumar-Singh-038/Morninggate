@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Morning Gate</string>
-    <string name="a11y_desc">Morning Gate watches which app is in the foreground between 7 AM and 11 AM and sends you back to the gate screen until your morning tasks are each verified.</string>
+    <string name="a11y_desc">Morning Gate watches which app is in the foreground while the gate is active and sends you back to the gate screen until your morning tasks are each verified.</string>
 </resources>

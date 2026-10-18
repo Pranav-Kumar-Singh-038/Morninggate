@@ -29,6 +29,8 @@ class AppPickerActivity : Activity() {
     companion object {
         const val EXTRA_SELECTED = "selected"
         const val EXTRA_RESULT = "result"
+        const val EXTRA_TITLE = "title"
+        const val EXTRA_SUBTITLE = "subtitle"
     }
 
     private data class Entry(val pkg: String, val label: String, val icon: Drawable?)
@@ -62,13 +64,14 @@ class AppPickerActivity : Activity() {
         }
 
         root.addView(TextView(this).apply {
-            text = "Choose apps"
+            text = intent.getStringExtra(EXTRA_TITLE) ?: "Choose apps"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
             setTextColor(Color.WHITE)
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "Time in these apps counts toward the check, and the gate lets you into them while the check is unfinished."
+            text = intent.getStringExtra(EXTRA_SUBTITLE)
+                ?: "Time in these apps counts toward the check, and the gate lets you into them while the check is unfinished."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(0xFF8A94A6.toInt())
             setLineSpacing(0f, 1.2f)

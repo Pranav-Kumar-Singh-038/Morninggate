@@ -22,6 +22,17 @@ object Gate {
         Prefs.init(context)
         load()
         ensureDay()
+        ensureDefaults()
+    }
+
+    /** First run: seed the "Wake up" alarm task so the morning has a start. */
+    private fun ensureDefaults() {
+        if (Prefs.wakeSeeded) return
+        Prefs.wakeSeeded = true
+        if (tasks.isEmpty()) {
+            saveTasks(listOf(Model.defaultWakeTask()))
+            Logx.add("seeded default 'Wake up' alarm task")
+        }
     }
 
     private fun load() {
@@ -55,9 +66,36 @@ object Gate {
             done.clear()
             dwell.clear()
             appTime.clear()
+            if (Prefs.alarmRinging) {
+                Prefs.alarmRinging = false
+                AlarmRinger.stop()
+            }
             persist()
         }
     }
+
+    // ---------- arming ----------
+
+    /** The gate only runs after the user taps Start (or the wake alarm is up). */
+    fun arm() {
+        Prefs.armedDay = LocalDate.now().toString()
+    }
+
+    fun disarm() {
+        Prefs.armedDay = ""
+    }
+
+    fun armedToday(): Boolean = Prefs.armedDay == LocalDate.now().toString()
+
+    // ---------- wake alarm ----------
+
+    fun alarmTasks(): List<Task> = tasks.filter { it.autoStart }
+
+    /** True while any auto-start task still needs verification. */
+    fun alarmPending(): Boolean = alarmTasks().any { !taskDone(it) }
+
+    fun alarmPendingNames(): String =
+        alarmTasks().filter { !taskDone(it) }.joinToString(", ") { it.name }.ifEmpty { "Wake up" }
 
     // ---------- progress plumbing ----------
 
@@ -145,9 +183,11 @@ object Gate {
         appTime[key(taskId, idx)] = appTimeMs(taskId, idx) + ms
     }
 
-    /** Apps the gate may release into right now: the ones app-time tasks still need. */
+    /** Apps the gate may release into right now: the user's allowed list plus the
+     *  apps that incomplete app-time tasks still need. */
     fun allowedPackages(): Set<String> {
         val out = HashSet<String>()
+        out.addAll(Prefs.allowedApps)
         for (t in tasks) {
             t.criteria.withIndex().forEach { (i, c) ->
                 if (c.type == CType.APP_TIME && !isDone(t.id, i)) out.addAll(c.packages)
@@ -156,14 +196,20 @@ object Gate {
         return out
     }
 
-    /** Whether the gate should be running right now (ignoring preview/force). */
+    /**
+     * Whether the gate should be running right now (ignoring preview/force).
+     *
+     * Nothing starts on its own: either the user armed it for today, or the
+     * wake alarm is ringing. Dwell can therefore never accrue while asleep.
+     */
     fun activeNow(): Boolean {
         if (!Prefs.enabled) return false
         if (Prefs.startMinutes == Prefs.endMinutes) return false
-        if (!ScheduleEngine.isInWindow()) return false
         if (System.currentTimeMillis() < Prefs.releaseUntilMs) return false
+        ScheduleEngine.sessionEnd() ?: return false
         ensureDay()
         if (tasks.isEmpty()) return false
-        return !allDone()
+        if (allDone()) return false
+        return armedToday() || Prefs.alarmRinging
     }
 }

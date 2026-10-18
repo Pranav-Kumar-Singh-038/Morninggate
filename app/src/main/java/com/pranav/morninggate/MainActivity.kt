@@ -25,15 +25,21 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import java.time.format.DateTimeFormatter
 
 class MainActivity : Activity() {
 
+    private companion object {
+        const val REQ_ALLOWED = 11
+    }
+
     private lateinit var statusView: TextView
     private lateinit var enableSwitch: Switch
+    private lateinit var gateToggle: Button
     private lateinit var startButton: Button
     private lateinit var endButton: Button
     private lateinit var tasksColumn: LinearLayout
+    private lateinit var allowedView: TextView
+    private lateinit var introView: TextView
     private lateinit var permsColumn: LinearLayout
     private lateinit var logView: TextView
 
@@ -47,6 +53,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // Recover a ringing alarm whose service couldn't start from the alarm broadcast.
+        if (Prefs.alarmRinging && !GateService.isRunning()) GateService.startAlarm(this)
         refresh()
     }
 
@@ -62,12 +70,20 @@ class MainActivity : Activity() {
         scroll.addView(col, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
         col.addView(title("Morning Gate"))
-        col.addView(body("Blocks every app from 7:00 AM until your morning tasks are each verified. Releases at 11:00 AM no matter what — and the phone always works for calls.", 14f, 0xFF8A94A6.toInt()))
+        introView = body("", 14f, 0xFF8A94A6.toInt())
+        col.addView(introView)
 
         statusView = body("", 16f, Color.WHITE)
         val slp = lp()
         slp.topMargin = dp(18)
         col.addView(statusView, slp)
+
+        gateToggle = Button(this).apply {
+            setOnClickListener { toggleGate() }
+        }
+        val glp = lp()
+        glp.topMargin = dp(12)
+        col.addView(gateToggle, glp)
 
         enableSwitch = Switch(this).apply {
             text = "Morning schedule"
@@ -108,12 +124,30 @@ class MainActivity : Activity() {
                 }
             }
         }
+        val testAlarm = Button(this).apply {
+            text = "Test alarm"
+            setOnClickListener {
+                when {
+                    !Checks.hasOverlay(this@MainActivity) -> toast("Grant 'Display over other apps' first")
+                    !Prefs.enabled -> toast("Enable the morning schedule first")
+                    Gate.tasks.none { it.autoStart } ->
+                        toast("No auto-start task — the Wake up task rings at the wake time")
+                    else -> {
+                        Prefs.alarmRinging = true
+                        GateService.startAlarm(this@MainActivity)
+                        toast("Wake alarm ringing — complete the mission to silence it")
+                    }
+                }
+            }
+        }
         val stop = Button(this).apply {
             text = "Stop"
             setOnClickListener { GateService.stop(this@MainActivity) }
         }
         tests.addView(preview, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        tests.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
+        tests.addView(View(this), LinearLayout.LayoutParams(dp(8), 1))
+        tests.addView(testAlarm, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        tests.addView(View(this), LinearLayout.LayoutParams(dp(8), 1))
         tests.addView(stop, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val tslp = lp()
         tslp.topMargin = dp(4)
@@ -123,12 +157,46 @@ class MainActivity : Activity() {
         tasksColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(tasksColumn)
 
+        col.addView(header("Allowed apps"))
+        col.addView(
+            body(
+                "These apps stay usable while the gate is up — music, maps, whatever you actually need. Calls always work.",
+                12f,
+                0xFF5A6472.toInt()
+            )
+        )
+        allowedView = body("", 14f, Color.WHITE)
+        val alv = lp()
+        alv.topMargin = dp(8)
+        col.addView(allowedView, alv)
+        val allowedButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        allowedButtons.addView(Button(this).apply {
+            text = "Choose allowed apps"
+            setOnClickListener { pickAllowedApps() }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        allowedButtons.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
+        allowedButtons.addView(Button(this).apply {
+            text = "Clear"
+            setOnClickListener {
+                if (Prefs.allowedApps.isEmpty()) {
+                    toast("The allowed list is already empty")
+                } else {
+                    Prefs.allowedApps = emptySet()
+                    Logx.add("allowed apps cleared")
+                    refresh()
+                }
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(allowedButtons, btnLp())
+
         col.addView(header("Leaving the gate early"))
         col.addView(
             body(
-                "No PIN: on the gate screen, tap the empty screen " +
-                    "${GateShellView.TAPS_TO_EXIT} times in a row, never pausing more than " +
-                    "${GateShellView.TAP_RESET_MS / 1000} seconds. Any longer pause resets the count to zero.",
+                "No PIN: while the gate (or the wake alarm) is up, tap \"Emergency bypass\", " +
+                    "then tap that screen ${BypassActivity.TAPS_TO_EXIT} times in a row, never " +
+                    "pausing more than ${BypassActivity.TAP_RESET_MS / 1000} seconds. Any longer " +
+                    "pause resets the count to zero. Completing it releases the gate and silences " +
+                    "the alarm until tomorrow.",
                 12f,
                 0xFF5A6472.toInt()
             )
@@ -147,23 +215,97 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         val running = GateService.isRunning()
+        val ringing = Prefs.alarmRinging
         val releasedToday = System.currentTimeMillis() < Prefs.releaseUntilMs
-        val inWindow = Prefs.enabled && ScheduleEngine.isInWindow()
-        val next = ScheduleEngine.nextBoundary().format(DateTimeFormatter.ofPattern("EEE h:mm a"))
+        val sessionOpen = ScheduleEngine.sessionEnd() != null
+        val wake = Format.minutes(Prefs.startMinutes)
         val doneTasks = Gate.tasks.count { Gate.taskDone(it) }
+        val allDone = Gate.tasks.isNotEmpty() && Gate.tasks.all { Gate.taskDone(it) }
+
+        introView.text = "Your wake alarm rings at the wake time until the mission is done. " +
+            "After that, start the gate yourself: every app stays blocked until each task is " +
+            "verified. Releases at ${Format.minutes(Prefs.endMinutes)} no matter what — and the " +
+            "phone always works for calls."
+
         statusView.text = when {
+            ringing -> "⏰  WAKE ALARM — finish: ${Gate.alarmPendingNames()}"
             running -> "● Gate ACTIVE — $doneTasks of ${Gate.tasks.size} tasks done"
-            inWindow && releasedToday -> "Released for today — next gate: $next"
-            inWindow -> "Waiting to arm…"
-            else -> "Idle — next gate: $next"
+            releasedToday -> "Released for today — next wake alarm at $wake"
+            allDone -> "All tasks done — good morning!"
+            !sessionOpen -> "Window closed — the gate returns tomorrow at $wake"
+            else -> "Gate off — tap Start when you're up (alarm rings at $wake)"
         }
-        statusView.setTextColor(if (running) 0xFF66D19E.toInt() else 0xFF9AA4B2.toInt())
-        startButton.text = "From: ${Format.minutes(Prefs.startMinutes)}"
-        endButton.text = "To: ${Format.minutes(Prefs.endMinutes)}"
+        statusView.setTextColor(
+            when {
+                ringing -> 0xFFE5534B.toInt()
+                running -> 0xFF66D19E.toInt()
+                else -> 0xFF9AA4B2.toInt()
+            }
+        )
+        startButton.text = "Wake alarm: ${Format.minutes(Prefs.startMinutes)}"
+        endButton.text = "Release: ${Format.minutes(Prefs.endMinutes)}"
+
+        gateToggle.text = if (running) "Stop the gate" else "Start the gate"
+        gateToggle.isEnabled = !ringing && !releasedToday && sessionOpen && !allDone
+
+        val allowed = Prefs.allowedApps
+        allowedView.text = if (allowed.isEmpty()) {
+            "None — everything is blocked except calls."
+        } else {
+            allowed.joinToString(", ") { Apps.label(this, it) }
+        }
+        allowedView.setTextColor(if (allowed.isEmpty()) 0xFF5A6472.toInt() else Color.WHITE)
 
         refreshTasks()
         refreshPerms()
         logView.text = Logx.snapshot().takeLast(30).joinToString("\n").ifEmpty { "No events yet." }
+    }
+
+    private fun toggleGate() {
+        if (GateService.isRunning()) {
+            Gate.disarm()
+            GateService.stop(this)
+            Logx.add("gate stopped by user")
+            refresh()
+            return
+        }
+        when {
+            Gate.tasks.isEmpty() -> toast("Add at least one task first")
+            ScheduleEngine.sessionEnd() == null ->
+                toast("The window is closed — the gate can start again tomorrow")
+            System.currentTimeMillis() < Prefs.releaseUntilMs ->
+                toast("You already bypassed today — the gate stays off until tomorrow")
+            else -> {
+                Gate.arm()
+                GateService.start(this)
+                Logx.add("gate armed by user")
+                toast("Gate started — dwell and app time are running now")
+                refresh()
+            }
+        }
+    }
+
+    private fun pickAllowedApps() {
+        startActivityForResult(
+            Intent(this, AppPickerActivity::class.java)
+                .putStringArrayListExtra(AppPickerActivity.EXTRA_SELECTED, ArrayList(Prefs.allowedApps))
+                .putExtra(AppPickerActivity.EXTRA_TITLE, "Allowed apps")
+                .putExtra(
+                    AppPickerActivity.EXTRA_SUBTITLE,
+                    "These apps stay usable while the gate is up. Everything else is blocked."
+                ),
+            REQ_ALLOWED
+        )
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_ALLOWED && resultCode == RESULT_OK) {
+            val pkgs = data?.getStringArrayListExtra(AppPickerActivity.EXTRA_RESULT) ?: return
+            Prefs.allowedApps = pkgs.toSet()
+            Logx.add("allowed apps: ${pkgs.size}")
+            refresh()
+        }
     }
 
     private fun refreshTasks() {
@@ -199,6 +341,16 @@ class MainActivity : Activity() {
             }
             row.addView(nameRow)
             row.addView(body(Model.summary(this, t), 12f, 0xFF9AA4B2.toInt()))
+            if (t.autoStart) {
+                row.addView(
+                    body(
+                        "⏰ Fires the wake alarm at ${Format.minutes(Prefs.startMinutes)} — the ring " +
+                            "stops only when this task's checks are verified.",
+                        11f,
+                        0xFFFFC46B.toInt()
+                    )
+                )
+            }
             if (t.criteria.any { it.type == CType.NFC && it.tagId.isBlank() }) {
                 row.addView(body("⚠ No tag bound yet — tap to edit, or bind one from the gate screen.", 11f, 0xFFE5534B.toInt()))
             }

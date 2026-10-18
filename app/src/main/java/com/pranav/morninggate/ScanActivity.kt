@@ -1,6 +1,7 @@
 package com.pranav.morninggate
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -14,6 +15,7 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.Settings
+import android.text.InputType
 import android.util.Size
 import android.util.TypedValue
 import android.view.Gravity
@@ -21,6 +23,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -171,7 +174,8 @@ class ScanActivity : ComponentActivity() {
             val c = criterion()
             when {
                 c == null -> "Point the camera at the $label."
-                c.payload.isBlank() -> "No code bound yet — the first scan today binds it."
+                c.payload.isBlank() -> "No code bound yet — the first scan binds it."
+                c.label.isNotBlank() -> "Scan \"${c.label}\" to verify this check."
                 else -> "Scan the bound $label to verify this check."
             }
         }
@@ -492,18 +496,27 @@ class ScanActivity : ComponentActivity() {
 
         when {
             crit.payload.isBlank() -> {
-                // First scan binds the code and satisfies today's check.
-                val newCrits = task.criteria.toMutableList()
-                newCrits[index] = crit.copy(payload = text)
-                val newTasks = Gate.tasks.toMutableList()
-                newTasks[ti] = task.copy(criteria = newCrits)
-                Gate.saveTasks(newTasks)
-                Gate.markDone(taskId, index)
+                // First scan binds the code (ask what it is) and satisfies today's check.
                 handled = true
-                Logx.add("code bound + done: ${preview(text)}")
-                successFeedback("Code bound — check complete")
-                GateService.requestRefresh()
-                handler.postDelayed({ finish() }, FINISH_DELAY_MS)
+                setStatus("Code captured — name it")
+                askCodeName { name ->
+                    val newCrits = task.criteria.toMutableList()
+                    newCrits[index] = crit.copy(payload = text, label = name)
+                    val newTasks = Gate.tasks.toMutableList()
+                    newTasks[ti] = task.copy(criteria = newCrits)
+                    Gate.saveTasks(newTasks)
+                    Gate.markDone(taskId, index)
+                    Logx.add(
+                        if (name.isBlank()) "code bound + done: ${preview(text)}"
+                        else "code bound \"$name\" + done: ${preview(text)}"
+                    )
+                    successFeedback(
+                        if (name.isBlank()) "Code bound — check complete"
+                        else "\"$name\" bound — check complete"
+                    )
+                    GateService.requestRefresh()
+                    handler.postDelayed({ finish() }, FINISH_DELAY_MS)
+                }
             }
             crit.payload.trim() == text -> {
                 Gate.markDone(taskId, index)
@@ -535,6 +548,41 @@ class ScanActivity : ComponentActivity() {
         } catch (_: Throwable) {
         }
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * The first scan binds the code; ask what it is so the gate can name the
+     * demand later ("scan the meds box"). Skipping binds it unnamed.
+     */
+    private fun askCodeName(onDone: (String) -> Unit) {
+        val edit = EditText(this).apply {
+            hint = "e.g. Meds box, fridge door…"
+            setInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
+        }
+        val wrap = FrameLayout(this).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(
+                edit,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        var done = false
+        fun go(name: String) {
+            if (done) return
+            done = true
+            onDone(name)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Name this code")
+            .setMessage("The gate shows this name, so you know which code it's demanding.")
+            .setView(wrap)
+            .setPositiveButton("Save") { _, _ -> go(edit.text.toString().trim()) }
+            .setNegativeButton("Skip") { _, _ -> go("") }
+            .setOnCancelListener { go("") }
+            .show()
     }
 
     private fun preview(s: String): String = if (s.length <= 40) s else s.take(40) + "…"

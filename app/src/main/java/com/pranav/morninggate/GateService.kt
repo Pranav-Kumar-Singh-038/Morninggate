@@ -77,9 +77,9 @@ class GateService : Service() {
     companion object {
         private const val ACTION_START = "com.pranav.morninggate.action.START"
         private const val ACTION_STOP = "com.pranav.morninggate.action.STOP"
-        private const val ACTION_EXIT_TODAY = "com.pranav.morninggate.action.EXIT_TODAY"
         private const val EXTRA_FORCE = "force"
         private const val EXTRA_AUTO_STOP_MS = "auto_stop_ms"
+        private const val EXTRA_ALARM = "alarm"
 
         private const val CHANNEL_ID = "morning_gate"
         private const val NOTIF_ID = 1
@@ -107,6 +107,44 @@ class GateService : Service() {
                 context.stopService(Intent(context, GateService::class.java))
             } catch (_: Throwable) {
             }
+        }
+
+        /** Starts (or re-rings) the wake alarm session. */
+        fun startAlarm(context: Context) {
+            try {
+                context.startForegroundService(
+                    Intent(context, GateService::class.java)
+                        .setAction(ACTION_START)
+                        .putExtra(EXTRA_ALARM, true)
+                )
+            } catch (t: Throwable) {
+                Logx.add("alarm start blocked: ${t.javaClass.simpleName}")
+                // Last resort: bring up the alarm screen; it re-starts the
+                // service from the foreground and can ring on its own.
+                try {
+                    context.startActivity(
+                        Intent(context, AlarmActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                } catch (_: Throwable) {
+                }
+            }
+        }
+
+        /** The emergency bypass: off for the rest of the day, alarm silenced. */
+        fun bypassToday(context: Context) {
+            val inst = instance
+            if (inst != null) {
+                inst.releaseToday()
+                return
+            }
+            Gate.init(context)
+            Gate.disarm()
+            ScheduleEngine.sessionEndMs()?.let { Prefs.releaseUntilMs = it }
+            Prefs.alarmRinging = false
+            AlarmRinger.stop()
+            ScheduleEngine.scheduleNext(context)
+            Logx.add("released for today (bypass)")
         }
 
         fun isRunning(): Boolean = instance != null
@@ -161,6 +199,7 @@ class GateService : Service() {
     private var overlayLp: WindowManager.LayoutParams? = null
     private var overlayShown = false
     private var forced = false
+    private var alarmMode = false
     private var auxActive = false
     private var currentForeground: String? = null
     private var firstUsagePoll = true
@@ -206,15 +245,12 @@ class GateService : Service() {
                 shutdown()
                 return START_NOT_STICKY
             }
-            ACTION_EXIT_TODAY -> {
-                releaseToday()
-                return START_NOT_STICKY
-            }
             else -> {
                 forced = intent?.getBooleanExtra(EXTRA_FORCE, false) ?: false
                 val autoStopMs = intent?.getLongExtra(EXTRA_AUTO_STOP_MS, 0L) ?: 0L
+                alarmMode = (intent?.getBooleanExtra(EXTRA_ALARM, false) ?: false) || Prefs.alarmRinging
 
-                if (!forced && !Gate.activeNow()) {
+                if (!alarmMode && !forced && !Gate.activeNow()) {
                     Logx.add("start ignored (gate inactive)")
                     stopSelf()
                     return START_NOT_STICKY
@@ -247,6 +283,13 @@ class GateService : Service() {
                 handler.post(usagePoll)
                 updateWarning()
 
+                if (alarmMode) {
+                    Prefs.alarmRinging = true
+                    AlarmRinger.start(this)
+                    showAlarmActivity()
+                    Logx.add("wake alarm ringing")
+                }
+
                 if (autoStopMs > 0L) {
                     handler.postDelayed({
                         Logx.add("preview timer ended")
@@ -254,7 +297,14 @@ class GateService : Service() {
                     }, autoStopMs)
                 }
 
-                Logx.add(if (forced) "preview shown" else "gate started")
+                updateNotification()
+                Logx.add(
+                    when {
+                        alarmMode -> "alarm session up"
+                        forced -> "preview shown"
+                        else -> "gate started (armed)"
+                    }
+                )
                 return START_STICKY
             }
         }
@@ -266,6 +316,7 @@ class GateService : Service() {
         removeOverlay()
         unregisterScreenReceiver()
         teardownSensors()
+        AlarmRinger.stop()
         super.onDestroy()
     }
 
@@ -296,17 +347,37 @@ class GateService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val alarm = Prefs.alarmRinging
+        val open = if (alarm) {
+            PendingIntent.getActivity(
+                this, 1,
+                Intent(this, AlarmActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        } else {
+            PendingIntent.getActivity(
+                this, 0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
         val tasks = Gate.tasks
         val done = tasks.count { Gate.taskDone(it) }
+        val title = if (alarm) {
+            "⏰ Wake up — mission: ${Gate.alarmPendingNames()}"
+        } else {
+            "Morning Gate · $done of ${tasks.size} tasks done"
+        }
+        val text = if (alarm) {
+            "The alarm stops once every check is verified"
+        } else {
+            "Releases at ${Format.minutes(Prefs.endMinutes)} no matter what"
+        }
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_gate)
-            .setContentTitle("Morning Gate · $done of ${tasks.size} tasks done")
-            .setContentText("Releases at ${Format.minutes(Prefs.endMinutes)} no matter what")
+            .setContentTitle(title)
+            .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
             .build()
@@ -324,7 +395,6 @@ class GateService : Service() {
     private fun ensureOverlay() {
         if (overlay != null) return
         val v = GateShellView(this)
-        v.onExitRequested = { releaseToday() }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -475,10 +545,14 @@ class GateService : Service() {
     private val selfCheck = object : Runnable {
         override fun run() {
             if (!forced) {
-                if (!Prefs.enabled || !ScheduleEngine.isInWindow() ||
-                    System.currentTimeMillis() < Prefs.releaseUntilMs
-                ) {
-                    Logx.add("self-check: gate inactive")
+                val released = System.currentTimeMillis() < Prefs.releaseUntilMs
+                val over = ScheduleEngine.sessionEnd() == null
+                // The wake alarm rings until silenced even outside the window
+                // (Test alarm, or a wake time right at the window edge).
+                val inactive = !Prefs.enabled || released ||
+                    (!alarmMode && (over || !Gate.armedToday()))
+                if (inactive) {
+                    Logx.add("self-check: session inactive")
                     shutdown()
                     return
                 }
@@ -496,6 +570,7 @@ class GateService : Service() {
     private val ticker = object : Runnable {
         override fun run() {
             dwellTick()
+            updateAlarmState()
             handler.postDelayed(this, TICK_MS)
         }
     }
@@ -514,7 +589,9 @@ class GateService : Service() {
         val deltaMs = if (lastTickMs == 0L) 0L
         else (now - lastTickMs).coerceIn(0L, 4L * 60L * 60L * 1000L)
         lastTickMs = now
-        val idle = !screenOn && (now - lastMotionMs) > MOTION_GRACE_MS
+        // Dwell never runs while the wake alarm is up: lying still in bed is
+        // exactly what the alarm is supposed to break.
+        val idle = !alarmMode && !screenOn && (now - lastMotionMs) > MOTION_GRACE_MS
         if (idle && lastIdle && deltaMs > 0) accrueDwell(deltaMs)
         lastIdle = idle
     }
@@ -571,6 +648,8 @@ class GateService : Service() {
                     screenOn = true
                     lastIdle = false
                     onInterruption("screen on")
+                    // The alarm belongs on screen whenever the phone wakes.
+                    if (alarmMode && !auxActive) showAlarmActivity()
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     if (!screenOn) {
@@ -789,6 +868,49 @@ class GateService : Service() {
         }
     }
 
+    /**
+     * The wake alarm: rings until every auto-start task is verified (or the
+     * 1000-tap bypass cleared it). Afterwards the session either continues as
+     * a normal armed gate, or shuts down if the user hasn't started one.
+     */
+    private fun updateAlarmState() {
+        if (!alarmMode) return
+        val missionDone = !Gate.alarmPending()
+        val cleared = !Prefs.alarmRinging || System.currentTimeMillis() < Prefs.releaseUntilMs
+        if (!missionDone && !cleared) return
+
+        alarmMode = false
+        Prefs.alarmRinging = false
+        AlarmRinger.stop()
+        Logx.add(if (missionDone) "alarm silenced — mission complete" else "alarm cleared")
+        updateNotification()
+        overlay?.refresh()
+
+        if (Gate.allDone()) {
+            completeAndRelease()
+            return
+        }
+        val keep = Gate.armedToday() &&
+            ScheduleEngine.sessionEnd() != null &&
+            System.currentTimeMillis() >= Prefs.releaseUntilMs
+        if (!keep) shutdown()
+    }
+
+    private fun showAlarmActivity() {
+        try {
+            startActivity(
+                Intent(this, AlarmActivity::class.java)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                    )
+            )
+        } catch (t: Throwable) {
+            Logx.add("alarm screen failed: ${t.javaClass.simpleName}")
+        }
+    }
+
     private fun completeAndRelease() {
         if (releasing) return
         releasing = true
@@ -799,13 +921,13 @@ class GateService : Service() {
         shutdown()
     }
 
+    /** The emergency bypass: off for the rest of the day, alarm silenced. */
     private fun releaseToday() {
-        if (ScheduleEngine.isInWindow()) {
-            Prefs.releaseUntilMs = ScheduleEngine.windowEndMs()
-            Logx.add("released for today (escape)")
-        } else {
-            Logx.add("preview ended (escape)")
-        }
+        Gate.disarm()
+        if (!forced) ScheduleEngine.sessionEndMs()?.let { Prefs.releaseUntilMs = it }
+        Prefs.alarmRinging = false
+        AlarmRinger.stop()
+        Logx.add("released for today (bypass)")
         ScheduleEngine.cancelHeartbeat(this)
         ScheduleEngine.scheduleNext(this)
         shutdown()
@@ -813,6 +935,9 @@ class GateService : Service() {
 
     private fun shutdown() {
         Logx.add("gate stopped")
+        alarmMode = false
+        Prefs.alarmRinging = false
+        AlarmRinger.stop()
         handler.removeCallbacksAndMessages(null)
         removeOverlay()
         unregisterScreenReceiver()
@@ -888,12 +1013,12 @@ class GateService : Service() {
                     CType.QR -> if (done) "QR · done" else {
                         actions.add(CritAction("Scan QR", null, false, true))
                         if (c.payload.isBlank()) "QR · not set — the first scan binds it"
-                        else "QR · scan the bound code"
+                        else "QR · scan ${Model.codeRef(c)}"
                     }
                     CType.BARCODE -> if (done) "Barcode · done" else {
                         actions.add(CritAction("Scan barcode", null, false, true))
                         if (c.payload.isBlank()) "Barcode · not set — the first scan binds it"
-                        else "Barcode · scan the bound code"
+                        else "Barcode · scan ${Model.codeRef(c)}"
                     }
                     CType.APP_TIME -> if (done) "App time · done" else {
                         val mins = (Gate.appTimeMs(t.id, i) / 60_000L).toInt()
@@ -908,6 +1033,6 @@ class GateService : Service() {
             out.add(TaskView(t.id, t.name, Gate.taskDone(t), crits))
         }
         val doneTasks = tasks.count { Gate.taskDone(it) }
-        return GateSnapshot(out, doneTasks, tasks.size, ScheduleEngine.windowEndMs(), warningCache, screenOn)
+        return GateSnapshot(out, doneTasks, tasks.size, ScheduleEngine.sessionEndMs() ?: 0L, warningCache, screenOn)
     }
 }

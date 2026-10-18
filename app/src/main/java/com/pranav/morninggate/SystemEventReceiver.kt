@@ -14,7 +14,7 @@ class SystemEventReceiver : BroadcastReceiver() {
 
         ScheduleEngine.scheduleNext(context)
 
-        if (Gate.activeNow()) {
+        if (Gate.activeNow() || Prefs.alarmRinging) {
             try {
                 GateService.start(context)
             } catch (t: Throwable) {

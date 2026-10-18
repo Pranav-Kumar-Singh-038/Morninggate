@@ -10,7 +10,6 @@ import android.graphics.drawable.GradientDrawable
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -24,20 +23,9 @@ import android.widget.TextView
 
 /**
  * The morning gate screen: task list with live verification progress, a phone
- * button (calls always work) and the same 1000-tap escape as Focus Lock.
+ * button (calls always work) and the way into the emergency bypass screen.
  */
 class GateShellView(context: Context) : FrameLayout(context) {
-
-    companion object {
-        /** How many taps open the gate early. Deliberately tedious. */
-        const val TAPS_TO_EXIT = 1000
-
-        /** A pause longer than this between taps resets the streak to zero. */
-        const val TAP_RESET_MS = 2_000L
-    }
-
-    /** Invoked when the tap-count escape is completed. */
-    var onExitRequested: (() -> Unit)? = null
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -47,15 +35,12 @@ class GateShellView(context: Context) : FrameLayout(context) {
     private val tasksColumn: LinearLayout
     private val countdownView: TextView
     private val hintView: TextView
-    private val tapView: TextView
 
     private var rowRefs = ArrayList<TaskRow>()
     private var lastKey: String? = null
 
     private var batteryRegistered = false
     private var batteryPct: Int? = null
-    private var tapCount = 0
-    private var lastTapMs = 0L
 
     private class TaskRow(val nameView: TextView, val statuses: List<TextView>)
 
@@ -83,8 +68,6 @@ class GateShellView(context: Context) : FrameLayout(context) {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(22), dp(76), dp(22), dp(30))
-            isClickable = true
-            setOnClickListener { countTap() }
         }
         addView(mainColumn, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
@@ -122,13 +105,8 @@ class GateShellView(context: Context) : FrameLayout(context) {
 
         tasksColumn = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            isClickable = true
-            setOnClickListener { countTap() }
         }
-        val scroll = ScrollView(context).apply {
-            isClickable = true
-            setOnClickListener { countTap() }
-        }
+        val scroll = ScrollView(context)
         scroll.addView(
             tasksColumn,
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
@@ -185,20 +163,22 @@ class GateShellView(context: Context) : FrameLayout(context) {
         mainColumn.addView(hintView, hlp)
         updateHint()
 
-        // Escape counter (bottom-centre): tap the empty screen many times in a row.
-        tapView = TextView(context).apply {
+        // Emergency bypass: a separate screen where 1000 deliberate taps
+        // release the gate and silence the alarm. Deliberately understated.
+        val bypass = TextView(context).apply {
+            text = "Emergency bypass"
             setTextColor(0xFF3F4753.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            visibility = View.INVISIBLE
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            isClickable = true
+            setOnClickListener { openBypass() }
         }
-        val tapLp = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            bottomMargin = dp(24)
-        }
-        addView(tapView, tapLp)
-
-        // Count taps on any empty area of the gate screen.
-        setOnClickListener { countTap() }
+        val blp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        blp.topMargin = dp(6)
+        mainColumn.addView(bypass, blp)
 
         render()
     }
@@ -391,22 +371,8 @@ class GateShellView(context: Context) : FrameLayout(context) {
         }
     }
 
-    /**
-     * The deliberate escape: TAPS_TO_EXIT taps, each within TAP_RESET_MS of the
-     * previous one. Any longer pause resets the streak to zero.
-     */
-    private fun countTap() {
-        val now = SystemClock.uptimeMillis()
-        if (now - lastTapMs > TAP_RESET_MS) tapCount = 0
-        lastTapMs = now
-        tapCount++
-        tapView.visibility = View.VISIBLE
-        tapView.text = "$tapCount / $TAPS_TO_EXIT"
-        if (tapCount >= TAPS_TO_EXIT) {
-            Logx.add("tap escape: $TAPS_TO_EXIT taps")
-            tapCount = 0
-            onExitRequested?.invoke()
-        }
+    private fun openBypass() {
+        GateService.launchAux(context, Intent(context, BypassActivity::class.java))
     }
 
     private fun readBattery(intent: Intent?) {

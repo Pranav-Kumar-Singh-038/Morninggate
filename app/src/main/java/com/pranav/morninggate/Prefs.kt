@@ -66,6 +66,40 @@ object Prefs {
             s().edit().putString("progress", v).apply()
         }
 
+    /**
+     * Calendar day (yyyy-MM-dd) for which the user manually armed the gate.
+     * The gate never starts on its own — dwell must not run while asleep.
+     */
+    var armedDay: String
+        get() = s().getString("armed_day", "") ?: ""
+        set(v) {
+            s().edit().putString("armed_day", v).apply()
+        }
+
+    /**
+     * True while the wake alarm is ringing. Persisted so a service restart
+     * mid-alarm resumes the ring instead of losing it.
+     */
+    var alarmRinging: Boolean
+        get() = s().getBoolean("alarm_ringing", false)
+        set(v) {
+            s().edit().putBoolean("alarm_ringing", v).apply()
+        }
+
+    /** Apps the user allows while the gate is up (calls always work anyway). */
+    var allowedApps: Set<String>
+        get() = s().getStringSet("allowed_apps", null)?.toSet() ?: emptySet()
+        set(v) {
+            s().edit().putStringSet("allowed_apps", HashSet(v)).apply()
+        }
+
+    /** The default "Wake up" alarm task is seeded exactly once. */
+    var wakeSeeded: Boolean
+        get() = s().getBoolean("wake_seeded", false)
+        set(v) {
+            s().edit().putBoolean("wake_seeded", v).apply()
+        }
+
     /** Calendar day (yyyy-MM-dd) the progress blob belongs to. */
     var day: String
         get() = s().getString("day", "") ?: ""

@@ -72,6 +72,23 @@
             android:label="Scan code"
             android:screenOrientation="portrait" />
 
+        <activity
+            android:name=".AlarmActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="Wake up"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:taskAffinity="com.pranav.morninggate.gate"
+            android:turnScreenOn="true" />
+
+        <activity
+            android:name=".BypassActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="Emergency bypass"
+            android:taskAffinity="com.pranav.morninggate.gate" />
+
         <service
             android:name=".GateService"
             android:directBootAware="true"

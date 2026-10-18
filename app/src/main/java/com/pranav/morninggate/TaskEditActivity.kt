@@ -14,8 +14,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 
@@ -33,6 +35,7 @@ class TaskEditActivity : Activity() {
         private const val MAX_CHECKS = 6
         private const val KEY_NAME = "edit_name"
         private const val KEY_DRAFTS = "edit_drafts"
+        private const val KEY_AUTO = "edit_auto"
         private const val KEY_PENDING_NFC = "edit_pending_nfc"
         private const val KEY_PENDING_APPS = "edit_pending_apps"
         private const val KEY_PENDING_SCAN = "edit_pending_scan"
@@ -40,6 +43,7 @@ class TaskEditActivity : Activity() {
 
     private var taskId: String? = null
     private lateinit var nameEdit: EditText
+    private lateinit var autoSwitch: Switch
     private lateinit var critsColumn: LinearLayout
     private val drafts = ArrayList<Draft>()
     private var pendingNfc = -1
@@ -86,6 +90,7 @@ class TaskEditActivity : Activity() {
         setContentView(buildUi(existing))
         if (restored != null) {
             nameEdit.setText(savedInstanceState.getString(KEY_NAME).orEmpty())
+            autoSwitch.isChecked = savedInstanceState.getBoolean(KEY_AUTO, existing?.autoStart ?: false)
             pendingNfc = savedInstanceState.getInt(KEY_PENDING_NFC, -1)
             pendingApps = savedInstanceState.getInt(KEY_PENDING_APPS, -1)
             pendingScan = savedInstanceState.getInt(KEY_PENDING_SCAN, -1)
@@ -97,6 +102,7 @@ class TaskEditActivity : Activity() {
         super.onSaveInstanceState(outState)
         saveDraftValues()
         outState.putString(KEY_NAME, nameEdit.text.toString())
+        outState.putBoolean(KEY_AUTO, autoSwitch.isChecked)
         outState.putString(
             KEY_DRAFTS,
             Model.tasksToJson(listOf(Task("draft", "", drafts.map { it.crit })))
@@ -137,6 +143,26 @@ class TaskEditActivity : Activity() {
         )
         nlp.topMargin = dp(14)
         col.addView(nameEdit, nlp)
+
+        col.addView(header("Wake alarm"))
+        autoSwitch = Switch(this).apply {
+            text = "Auto start (ring at the wake time)"
+            setTextColor(Color.WHITE)
+            isChecked = existing?.autoStart ?: false
+        }
+        val aslp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        aslp.topMargin = dp(4)
+        col.addView(autoSwitch, aslp)
+        col.addView(
+            body(
+                "When on, the phone rings loudly at the wake time (${Format.minutes(Prefs.startMinutes)}) " +
+                    "and only stops once this task's checks are verified. Phone-away dwell can't be " +
+                    "used here — you'd be asleep, which is the whole point."
+            )
+        )
 
         col.addView(header("Completion checks"))
         col.addView(body("Every check must be verified in the morning. Two or more checks on one task = hard mode."))
@@ -281,11 +307,7 @@ class TaskEditActivity : Activity() {
                 }, btnLp())
             }
             CType.QR, CType.BARCODE -> {
-                d.statusView = statusLine(
-                    if (d.crit.payload.isBlank()) "No code bound yet — the first scan fills it in."
-                    else "Bound: " + d.crit.payload.take(48) +
-                        (if (d.crit.payload.length > 48) "…" else "")
-                )
+                d.statusView = statusLine(codeBoundLine(d.crit))
                 card.addView(d.statusView)
                 card.addView(Button(this).apply {
                     text = if (d.crit.payload.isBlank()) "Scan to bind" else "Scan again"
@@ -304,6 +326,15 @@ class TaskEditActivity : Activity() {
                         )
                     }
                 }, btnLp())
+                if (d.crit.payload.isNotBlank()) {
+                    card.addView(Button(this).apply {
+                        text = "Rename code"
+                        setOnClickListener {
+                            saveDraftValues()
+                            askCodeName(i, d.crit.payload)
+                        }
+                    }, btnLp())
+                }
             }
         }
         return card
@@ -312,6 +343,13 @@ class TaskEditActivity : Activity() {
     private fun appsLine(c: Criterion): String =
         if (c.packages.isEmpty()) "No apps chosen yet."
         else "Apps: " + c.packages.joinToString(", ") { Apps.label(this, it) }
+
+    private fun codeBoundLine(c: Criterion): String {
+        if (c.payload.isBlank()) return "No code bound yet — the first scan fills it in."
+        val pay = if (c.payload.length <= 36) c.payload else c.payload.take(36) + "…"
+        return if (c.label.isBlank()) "Bound: $pay"
+        else "Bound: \"${c.label}\" · $pay"
+    }
 
     // ---------------- data ----------------
 
@@ -336,6 +374,7 @@ class TaskEditActivity : Activity() {
             toast("Add at least one completion check")
             return
         }
+        val auto = autoSwitch.isChecked
         for (d in drafts) {
             val c = d.crit
             when (c.type) {
@@ -360,13 +399,17 @@ class TaskEditActivity : Activity() {
                 else -> {}
             }
         }
+        if (auto && drafts.any { it.crit.type == CType.DWELL }) {
+            toast("Auto-start tasks can't use phone-away dwell — swap it for steps, a tag or a code")
+            return
+        }
         val id = taskId ?: Model.newId()
-        val task = Task(id, name, drafts.map { it.crit })
+        val task = Task(id, name, drafts.map { it.crit }, autoStart = auto)
         val list = Gate.tasks.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx >= 0) list[idx] = task else list.add(task)
         Gate.saveTasks(list)
-        Logx.add("task saved: $name (${task.criteria.size} checks)")
+        Logx.add("task saved: $name (${task.criteria.size} checks${if (auto) ", auto-start" else ""})")
         finish()
     }
 
@@ -405,13 +448,51 @@ class TaskEditActivity : Activity() {
             }
             REQ_SCAN -> {
                 val payload = data?.getStringExtra(ScanActivity.EXTRA_PAYLOAD) ?: return
+                val i = pendingScan
+                if (i < 0) return
                 saveDraftValues()
-                drafts.getOrNull(pendingScan)?.let { it.crit = it.crit.copy(payload = payload) }
-                pendingScan = -1
-                rebuildCrits()
-                toast("Code bound")
+                askCodeName(i, payload)
             }
         }
+    }
+
+    /**
+     * After a code is scanned, ask what it is. The name is shown on the gate
+     * screen so the demand is identifiable ("scan the meds box").
+     */
+    private fun askCodeName(i: Int, payload: String) {
+        val d = drafts.getOrNull(i) ?: return
+        val old = d.crit.label
+        val edit = EditText(this).apply {
+            setText(old)
+            hint = "e.g. Meds box, fridge door…"
+            setInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
+        }
+        val wrap = FrameLayout(this).apply {
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(
+                edit,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        fun apply(label: String) {
+            saveDraftValues()
+            drafts.getOrNull(i)?.let { it.crit = it.crit.copy(payload = payload, label = label) }
+            pendingScan = -1
+            rebuildCrits()
+            toast(if (label.isBlank()) "Code bound" else "Code bound: $label")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Name this code")
+            .setMessage("The gate shows this name, so you know which code it's demanding.")
+            .setView(wrap)
+            .setPositiveButton("Save") { _, _ -> apply(edit.text.toString().trim()) }
+            .setNegativeButton("Skip") { _, _ -> apply(old) }
+            .setOnCancelListener { apply(old) }
+            .show()
     }
 
     // ---------------- widgets ----------------

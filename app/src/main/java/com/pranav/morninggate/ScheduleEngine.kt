@@ -11,20 +11,66 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * Computes the morning window and keeps exact alarms armed for the next boundary.
- * (Same engine as Focus Lock's night window, just a different clock.)
+ * Computes the morning window and keeps exact alarms armed for the wake time,
+ * the release time and the in-window heartbeat.
+ *
+ * The wake alarm is the only thing that fires on its own: it rings until the
+ * auto-start tasks are verified. The gate itself never starts by itself — the
+ * user arms it with the Start toggle (or the alarm screen), so dwell can't
+ * run while the phone sits untouched on a sleeping person's nightstand.
  */
 object ScheduleEngine {
-    const val ACTION_BOUNDARY = "com.pranav.morninggate.action.BOUNDARY"
+    const val ACTION_WAKE = "com.pranav.morninggate.action.WAKE"
+    const val ACTION_RELEASE = "com.pranav.morninggate.action.RELEASE"
     const val ACTION_HEARTBEAT = "com.pranav.morninggate.action.HEARTBEAT"
 
-    private const val RC_BOUNDARY = 1001
-    private const val RC_HEARTBEAT = 1002
+    private const val RC_WAKE = 1001
+    private const val RC_RELEASE = 1002
+    private const val RC_HEARTBEAT = 1003
     private const val HEARTBEAT_MS = 15L * 60L * 1000L
 
     private fun startTime(): LocalTime = LocalTime.of(Prefs.startMinutes / 60, Prefs.startMinutes % 60)
     private fun endTime(): LocalTime = LocalTime.of(Prefs.endMinutes / 60, Prefs.endMinutes % 60)
 
+    private fun millis(dt: LocalDateTime): Long =
+        dt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+    /** Next occurrence of the wake time. */
+    fun nextWake(now: LocalDateTime = LocalDateTime.now()): LocalDateTime {
+        val candidate = now.toLocalDate().atTime(startTime())
+        return if (candidate.isAfter(now)) candidate else now.toLocalDate().plusDays(1).atTime(startTime())
+    }
+
+    /** Next occurrence of the release time. */
+    fun nextRelease(now: LocalDateTime = LocalDateTime.now()): LocalDateTime {
+        val candidate = now.toLocalDate().atTime(endTime())
+        return if (candidate.isAfter(now)) candidate else now.toLocalDate().plusDays(1).atTime(endTime())
+    }
+
+    /**
+     * End of the session that contains [now]: today's release time while the
+     * day still has a session ahead, null once it has passed. Handles windows
+     * that cross midnight (start > end).
+     */
+    fun sessionEnd(now: LocalDateTime = LocalDateTime.now()): LocalDateTime? {
+        if (Prefs.startMinutes == Prefs.endMinutes) return null
+        val s = startTime()
+        val e = endTime()
+        val t = now.toLocalTime()
+        return if (s < e) {
+            if (t.isBefore(e)) now.toLocalDate().atTime(e) else null
+        } else {
+            when {
+                !t.isBefore(s) -> now.toLocalDate().plusDays(1).atTime(e)
+                t.isBefore(e) -> now.toLocalDate().atTime(e)
+                else -> null
+            }
+        }
+    }
+
+    fun sessionEndMs(): Long? = sessionEnd()?.let { millis(it) }
+
+    /** True while [now] is inside the configured window (status text only). */
     fun isInWindow(now: LocalDateTime = LocalDateTime.now()): Boolean {
         if (Prefs.startMinutes == Prefs.endMinutes) return false
         val t = now.toLocalTime()
@@ -36,23 +82,6 @@ object ScheduleEngine {
             !t.isBefore(s) || t.isBefore(e)
         }
     }
-
-    /** End of the window that contains [now] (or the next end if outside). */
-    fun windowEnd(now: LocalDateTime = LocalDateTime.now()): LocalDateTime {
-        val e = endTime()
-        val candidate = now.toLocalDate().atTime(e)
-        return if (candidate.isAfter(now)) candidate else now.toLocalDate().plusDays(1).atTime(e)
-    }
-
-    fun nextBoundary(now: LocalDateTime = LocalDateTime.now()): LocalDateTime =
-        if (isInWindow(now)) windowEnd(now) else {
-            val s = startTime()
-            val candidate = now.toLocalDate().atTime(s)
-            if (candidate.isAfter(now)) candidate else now.toLocalDate().plusDays(1).atTime(s)
-        }
-
-    private fun millis(dt: LocalDateTime): Long =
-        dt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
     private fun pending(context: Context, action: String, rc: Int): PendingIntent {
         val i = Intent(context, AlarmReceiver::class.java).setAction(action)
@@ -85,15 +114,18 @@ object ScheduleEngine {
             Logx.add("schedule: disabled")
             return
         }
-        val next = nextBoundary()
-        setExact(context, millis(next), pending(context, ACTION_BOUNDARY, RC_BOUNDARY))
-        val readable = next.format(DateTimeFormatter.ofPattern("EEE HH:mm"))
-        Logx.add("schedule: next boundary $readable")
+        val wake = nextWake()
+        val release = nextRelease()
+        setExact(context, millis(wake), pending(context, ACTION_WAKE, RC_WAKE))
+        setExact(context, millis(release), pending(context, ACTION_RELEASE, RC_RELEASE))
+        val f = DateTimeFormatter.ofPattern("EEE HH:mm")
+        Logx.add("schedule: wake ${wake.format(f)} · release ${release.format(f)}")
     }
 
-    /** While inside the window, a repeating safety net that re-arms the service if it died. */
+    /** While a gate session is up, a repeating safety net that re-arms the service if it died. */
     fun scheduleHeartbeat(context: Context) {
-        if (!Prefs.enabled || !isInWindow()) return
+        if (!Prefs.enabled) return
+        if (!Gate.activeNow() && !Prefs.alarmRinging) return
         setExact(
             context,
             System.currentTimeMillis() + HEARTBEAT_MS,
@@ -108,11 +140,8 @@ object ScheduleEngine {
 
     fun cancelAll(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        am.cancel(pending(context, ACTION_BOUNDARY, RC_BOUNDARY))
+        am.cancel(pending(context, ACTION_WAKE, RC_WAKE))
+        am.cancel(pending(context, ACTION_RELEASE, RC_RELEASE))
         am.cancel(pending(context, ACTION_HEARTBEAT, RC_HEARTBEAT))
     }
-
-    /** End of today's window in epoch millis (used by the escape). */
-    fun windowEndMs(): Long =
-        windowEnd().atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 }
