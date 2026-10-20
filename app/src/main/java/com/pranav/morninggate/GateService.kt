@@ -501,14 +501,25 @@ class GateService : Service() {
             firstUsagePoll = false
             val events = usm.queryEvents(now - lookback, now)
             val e = UsageEvents.Event()
-            var last: String? = null
+            var lastFg: String? = null
+            var cachedWentBackground = false
             while (events.hasNextEvent()) {
                 events.getNextEvent(e)
-                if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
-                    last = e.packageName
+                when (e.eventType) {
+                    UsageEvents.Event.MOVE_TO_FOREGROUND -> lastFg = e.packageName
+                    UsageEvents.Event.MOVE_TO_BACKGROUND ->
+                        if (e.packageName == lastPollFg) cachedWentBackground = true
                 }
             }
-            val fg = last
+            // Usage events are transitions only. An app that simply stays on
+            // screen produces none, so keep the previous foreground instead of
+            // passing null (which used to freeze the app-time clock until the
+            // next app switch). Drop it only when the cached app went away.
+            val fg = when {
+                lastFg != null -> lastFg
+                cachedWentBackground -> null
+                else -> lastPollFg
+            }
             if (fg != null) handleForeground(fg)
             accrueAppTime(fg)
         } catch (_: Throwable) {
@@ -571,6 +582,7 @@ class GateService : Service() {
         override fun run() {
             dwellTick()
             updateAlarmState()
+            if (alarmMode) AlarmRinger.enforceMaxVolume()
             handler.postDelayed(this, TICK_MS)
         }
     }
@@ -641,6 +653,9 @@ class GateService : Service() {
                     dwellTick()
                     screenOn = false
                     lastIdle = false
+                    // Don't resume the app-time clock from a stale foreground
+                    // after the screen comes back.
+                    lastPollFg = null
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (screenOn) return

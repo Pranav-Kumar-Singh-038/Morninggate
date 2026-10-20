@@ -29,22 +29,37 @@ object AlarmRinger {
 
     fun isRinging(): Boolean = ringing
 
+    /** Re-asserts full alarm volume; called on every service tick while ringing. */
+    fun enforceMaxVolume() {
+        if (!ringing) return
+        val am = audioManager ?: return
+        try {
+            setMax(am)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun setMax(am: AudioManager) {
+        val max = am.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+        if (am.getStreamVolume(AudioManager.STREAM_ALARM) != max) {
+            am.setStreamVolume(AudioManager.STREAM_ALARM, max, 0)
+        }
+    }
+
     fun start(context: Context) {
         if (ringing) return
         ringing = true
         val app = context.applicationContext
 
-        // Make sure the alarm stream can actually be heard; restored on stop.
+        // Pin the alarm stream to full for the whole ring time; the user's
+        // previous level is restored in stop(). The service re-asserts this
+        // every tick, so the volume keys can't quiet the alarm mid-ring.
         try {
             val am = app.getSystemService(AudioManager::class.java)
             if (am != null) {
                 audioManager = am
                 if (savedAlarmVolume < 0) savedAlarmVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
-                am.setStreamVolume(
-                    AudioManager.STREAM_ALARM,
-                    am.getStreamMaxVolume(AudioManager.STREAM_ALARM),
-                    0
-                )
+                setMax(am)
             }
         } catch (t: Throwable) {
             Logx.add("alarm volume: ${t.javaClass.simpleName}")
