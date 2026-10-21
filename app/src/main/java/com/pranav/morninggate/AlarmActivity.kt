@@ -17,7 +17,6 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -35,7 +34,6 @@ class AlarmActivity : Activity() {
     private lateinit var clockView: TextView
     private lateinit var statusView: TextView
     private lateinit var missionColumn: LinearLayout
-    private lateinit var startButton: Button
     private lateinit var doneButton: Button
 
     private class Row(val nameView: TextView, val statuses: List<TextView>)
@@ -136,25 +134,17 @@ class AlarmActivity : Activity() {
         slp.topMargin = dp(14)
         root.addView(scroll, slp)
 
-        startButton = Button(this).apply {
-            text = "Start the gate"
-            setOnClickListener {
-                Gate.arm()
-                GateService.start(this@AlarmActivity)
-                Logx.add("gate armed from alarm screen")
-                toast("Gate started")
-                finish()
-            }
-        }
         doneButton = Button(this).apply {
-            text = "Still ringing"
+            text = "Mission required"
             setOnClickListener { finish() }
         }
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(startButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        buttons.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
-        buttons.addView(doneButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(buttons, topMargin(10))
+        root.addView(
+            doneButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        )
 
         root.addView(TextView(this).apply {
             text = "Emergency bypass"
@@ -195,7 +185,6 @@ class AlarmActivity : Activity() {
         }
         updateDynamic(tasks, snap)
 
-        startButton.visibility = if (canStartGate()) View.VISIBLE else View.GONE
         doneButton.isEnabled = !ringing
         doneButton.text = if (ringing) "Mission required" else "Done"
     }
@@ -290,12 +279,6 @@ class AlarmActivity : Activity() {
         }
     }
 
-    private fun canStartGate(): Boolean =
-        !Prefs.alarmRinging && Prefs.enabled &&
-            ScheduleEngine.sessionEnd() != null &&
-            System.currentTimeMillis() >= Prefs.releaseUntilMs &&
-            !GateService.isRunning() && Gate.tasks.isNotEmpty()
-
     // ---------------- actions ----------------
 
     private fun runAction(taskId: String, index: Int, a: CritAction) {
@@ -344,8 +327,6 @@ class AlarmActivity : Activity() {
         LinearLayout.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
     ).apply { topMargin = dp(v) }
-
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 }

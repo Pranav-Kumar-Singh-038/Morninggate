@@ -43,8 +43,8 @@ data class Task(
     val criteria: List<Criterion>,
     /**
      * Auto-start: at the wake time the phone rings until this task is verified.
-     * The seeded "Wake up" task has it on; the ring is the alarm, the task's
-     * criteria are the mission that silences it.
+     * The gate itself always arms at wake time; this flag only controls the
+     * ring. The seeded "Wake up" task has it on.
      */
     val autoStart: Boolean = false
 )

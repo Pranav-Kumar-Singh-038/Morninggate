@@ -55,6 +55,10 @@ data class TaskView(
     val id: String,
     val name: String,
     val done: Boolean,
+    /** True once the user deliberately started this task's phone-away dwell. */
+    val dwellStarted: Boolean,
+    /** True while an unfinished dwell check is waiting to be started. */
+    val dwellPending: Boolean,
     val crits: List<CritView>
 )
 
@@ -68,9 +72,10 @@ data class GateSnapshot(
 )
 
 /**
- * Runs while the morning gate is active: shows the gate overlay, tracks
- * verification progress (dwell / steps / NFC / QR / barcode / app time) and releases the
- * phone once every task is done, when the window ends, or after the tap escape.
+ * Runs while the morning gate is active: shows the gate overlay and allowed-app
+ * shortcuts, tracks verification progress (manually started dwell / steps /
+ * NFC / QR / barcode / app time), and releases the phone once every task is
+ * done, when the window ends, or after the tap escape.
  */
 class GateService : Service() {
 
@@ -614,7 +619,10 @@ class GateService : Service() {
         var changed = false
         for (t in Gate.tasks) {
             t.criteria.withIndex().forEach { (i, c) ->
-                if (c.type == CType.DWELL && !Gate.isDone(t.id, i)) {
+                // Dwell is opt-in per task: nothing accrues until the user
+                // taps Start, so the gate can arm itself at wake time without
+                // handing out phone-away credit to someone still in bed.
+                if (c.type == CType.DWELL && !Gate.isDone(t.id, i) && Gate.isTaskStarted(t.id)) {
                     Gate.addDwell(t.id, i, sec)
                     changed = true
                     if (Gate.dwellSec(t.id, i) >= c.minutes * 60) {
@@ -629,7 +637,7 @@ class GateService : Service() {
         }
     }
 
-    private fun onInterruption(reason: String) {
+    private fun onInterruption(reason: String, endDwellSession: Boolean = false) {
         var had = false
         for (t in Gate.tasks) {
             t.criteria.withIndex().forEach { (i, c) ->
@@ -639,7 +647,7 @@ class GateService : Service() {
             }
         }
         if (had) Logx.add("dwell reset: $reason")
-        Gate.resetDwell()
+        Gate.resetDwell(clearStarted = endDwellSession)
         overlay?.refresh()
     }
 
@@ -662,7 +670,7 @@ class GateService : Service() {
                     dwellTick() // accrue genuine idle time up to the wake
                     screenOn = true
                     lastIdle = false
-                    onInterruption("screen on")
+                    onInterruption("screen on", endDwellSession = true)
                     // The alarm belongs on screen whenever the phone wakes.
                     if (alarmMode && !auxActive) showAlarmActivity()
                 }
@@ -672,7 +680,7 @@ class GateService : Service() {
                         screenOn = true
                     }
                     lastIdle = false
-                    onInterruption("unlock")
+                    onInterruption("unlock", endDwellSession = true)
                 }
             }
         }
@@ -957,6 +965,7 @@ class GateService : Service() {
         removeOverlay()
         unregisterScreenReceiver()
         teardownSensors()
+        Gate.clearDwellStarts()
         Gate.persist()
         stopForeground(true)
         stopSelf()
@@ -1009,8 +1018,12 @@ class GateService : Service() {
                 val text = when (c.type) {
                     CType.DWELL -> if (done) "Dwell · done" else {
                         val acc = Gate.dwellSec(t.id, i)
-                        "Dwell · ${Format.mmss(acc)} / ${Format.mmss(c.minutes * 60)}" +
-                            if (screenOn) " · screen off to run" else " · running"
+                        val base = "Dwell · ${Format.mmss(acc)} / ${Format.mmss(c.minutes * 60)}"
+                        when {
+                            !Gate.isTaskStarted(t.id) -> "$base · not started"
+                            screenOn -> "$base · screen off to run"
+                            else -> "$base · running"
+                        }
                     }
                     CType.STEPS -> if (done) "Steps · done" else
                         "Steps · ${stepDeltaFor(c)} / ${c.steps} in ${c.windowMin} min"
@@ -1045,7 +1058,16 @@ class GateService : Service() {
                 }
                 crits.add(CritView(i, c.type, done, text, actions))
             }
-            out.add(TaskView(t.id, t.name, Gate.taskDone(t), crits))
+            out.add(
+                TaskView(
+                    t.id,
+                    t.name,
+                    Gate.taskDone(t),
+                    Gate.isTaskStarted(t.id),
+                    Gate.hasPendingDwell(t),
+                    crits
+                )
+            )
         }
         val doneTasks = tasks.count { Gate.taskDone(it) }
         return GateSnapshot(out, doneTasks, tasks.size, ScheduleEngine.sessionEndMs() ?: 0L, warningCache, screenOn)

@@ -160,7 +160,8 @@ class TaskEditActivity : Activity() {
             body(
                 "When on, the phone rings loudly at the wake time (${Format.minutes(Prefs.startMinutes)}) " +
                     "and only stops once this task's checks are verified. Phone-away dwell can't be " +
-                    "used here — you'd be asleep, which is the whole point."
+                    "used here — you'd be asleep, which is the whole point. The gate itself arms " +
+                    "automatically at the wake time."
             )
         )
 
@@ -262,7 +263,15 @@ class TaskEditActivity : Activity() {
         card.addView(headerRow)
 
         when (d.crit.type) {
-            CType.DWELL -> card.addView(paramRow("Minutes of phone-away", d.crit.minutes) { d.minutesEdit = it })
+            CType.DWELL -> {
+                card.addView(paramRow("Minutes of phone-away", d.crit.minutes) { d.minutesEdit = it })
+                card.addView(
+                    statusLine(
+                        "Dwell only runs after you tap Start dwell on the gate screen, then " +
+                            "turn the screen off and put the phone down."
+                    )
+                )
+            }
             CType.STEPS -> {
                 card.addView(paramRow("Steps", d.crit.steps) { d.stepsEdit = it })
                 card.addView(paramRow("Within minutes", d.crit.windowMin) { d.windowEdit = it })

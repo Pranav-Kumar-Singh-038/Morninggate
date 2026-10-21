@@ -67,8 +67,8 @@ object Prefs {
         }
 
     /**
-     * Calendar day (yyyy-MM-dd) for which the user manually armed the gate.
-     * The gate never starts on its own — dwell must not run while asleep.
+     * Calendar day (yyyy-MM-dd) for which the gate is armed. The wake receiver
+     * sets it automatically at the alarm time.
      */
     var armedDay: String
         get() = s().getString("armed_day", "") ?: ""

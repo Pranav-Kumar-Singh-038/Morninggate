@@ -14,10 +14,10 @@ import java.time.format.DateTimeFormatter
  * Computes the morning window and keeps exact alarms armed for the wake time,
  * the release time and the in-window heartbeat.
  *
- * The wake alarm is the only thing that fires on its own: it rings until the
- * auto-start tasks are verified. The gate itself never starts by itself — the
- * user arms it with the Start toggle (or the alarm screen), so dwell can't
- * run while the phone sits untouched on a sleeping person's nightstand.
+ * At the wake time the receiver arms the gate automatically and rings the
+ * alarm until the auto-start tasks are verified. Dwell checks still only run
+ * after the user starts them by hand, so an untouched phone at wake-up earns
+ * nothing.
  */
 object ScheduleEngine {
     const val ACTION_WAKE = "com.pranav.morninggate.action.WAKE"

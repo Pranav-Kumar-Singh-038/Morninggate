@@ -53,8 +53,14 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        // Recover a ringing alarm whose service couldn't start from the alarm broadcast.
-        if (Prefs.alarmRinging && !GateService.isRunning()) GateService.startAlarm(this)
+        // Recover a gate that should be up: an armed auto-session, or a
+        // ringing alarm whose service couldn't start from the broadcast.
+        if (!GateService.isRunning()) {
+            when {
+                Prefs.alarmRinging -> GateService.startAlarm(this)
+                Gate.activeNow() -> GateService.start(this)
+            }
+        }
         refresh()
     }
 
@@ -222,18 +228,20 @@ class MainActivity : Activity() {
         val doneTasks = Gate.tasks.count { Gate.taskDone(it) }
         val allDone = Gate.tasks.isNotEmpty() && Gate.tasks.all { Gate.taskDone(it) }
 
-        introView.text = "Your wake alarm rings at the wake time until the mission is done. " +
-            "After that, start the gate yourself: every app stays blocked until each task is " +
-            "verified. Releases at ${Format.minutes(Prefs.endMinutes)} no matter what — and the " +
-            "phone always works for calls."
+        introView.text = "At the wake time the gate comes up on its own and the alarm rings " +
+            "until the mission is done. Every app stays blocked until each task is verified. " +
+            "Dwell tasks need a manual Start on the gate screen — then put the phone down. " +
+            "Releases at ${Format.minutes(Prefs.endMinutes)} no matter what — and the phone " +
+            "always works for calls."
 
         statusView.text = when {
             ringing -> "⏰  WAKE ALARM — finish: ${Gate.alarmPendingNames()}"
             running -> "● Gate ACTIVE — $doneTasks of ${Gate.tasks.size} tasks done"
+            !Prefs.enabled -> "Morning schedule off — the gate won't start"
             releasedToday -> "Released for today — next wake alarm at $wake"
             allDone -> "All tasks done — good morning!"
             !sessionOpen -> "Window closed — the gate returns tomorrow at $wake"
-            else -> "Gate off — tap Start when you're up (alarm rings at $wake)"
+            else -> "Gate off — it starts automatically at $wake"
         }
         statusView.setTextColor(
             when {
@@ -245,14 +253,21 @@ class MainActivity : Activity() {
         startButton.text = "Wake alarm: ${Format.minutes(Prefs.startMinutes)}"
         endButton.text = "Release: ${Format.minutes(Prefs.endMinutes)}"
 
-        gateToggle.text = if (running) "Stop the gate" else "Start the gate"
-        gateToggle.isEnabled = !ringing && !releasedToday && sessionOpen && !allDone
+        gateToggle.text = when {
+            running -> "Stop the gate for today"
+            !Prefs.enabled -> "Enable the morning schedule to start the gate"
+            releasedToday -> "Released for today — the gate stays off until tomorrow"
+            !sessionOpen -> "Gate window closed — next start at $wake"
+            else -> "Gate starts automatically at $wake"
+        }
+        gateToggle.isEnabled = running && !ringing
 
         val allowed = Prefs.allowedApps
         allowedView.text = if (allowed.isEmpty()) {
             "None — everything is blocked except calls."
         } else {
-            allowed.joinToString(", ") { Apps.label(this, it) }
+            allowed.joinToString(", ") { Apps.label(this, it) } +
+                "\nShown as small shortcuts on the gate screen."
         }
         allowedView.setTextColor(if (allowed.isEmpty()) 0xFF5A6472.toInt() else Color.WHITE)
 
@@ -262,27 +277,18 @@ class MainActivity : Activity() {
     }
 
     private fun toggleGate() {
-        if (GateService.isRunning()) {
-            Gate.disarm()
-            GateService.stop(this)
-            Logx.add("gate stopped by user")
-            refresh()
+        if (!GateService.isRunning()) {
+            toast(
+                "The gate starts on its own at ${Format.minutes(Prefs.startMinutes)} — " +
+                    "use Preview to try it now"
+            )
             return
         }
-        when {
-            Gate.tasks.isEmpty() -> toast("Add at least one task first")
-            ScheduleEngine.sessionEnd() == null ->
-                toast("The window is closed — the gate can start again tomorrow")
-            System.currentTimeMillis() < Prefs.releaseUntilMs ->
-                toast("You already bypassed today — the gate stays off until tomorrow")
-            else -> {
-                Gate.arm()
-                GateService.start(this)
-                Logx.add("gate armed by user")
-                toast("Gate started — dwell and app time are running now")
-                refresh()
-            }
-        }
+        Gate.disarm()
+        GateService.stop(this)
+        ScheduleEngine.cancelHeartbeat(this)
+        Logx.add("gate stopped by user")
+        refresh()
     }
 
     private fun pickAllowedApps() {

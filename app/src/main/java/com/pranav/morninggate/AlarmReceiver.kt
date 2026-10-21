@@ -21,7 +21,7 @@ class AlarmReceiver : BroadcastReceiver() {
         }
     }
 
-    /** The wake alarm: ring until the auto-start tasks are verified. */
+    /** The wake alarm: the gate arms itself and the phone rings until the auto-start mission is verified. */
     private fun wakeAlarm(context: Context) {
         ScheduleEngine.cancelHeartbeat(context)
         val released = System.currentTimeMillis() < Prefs.releaseUntilMs
@@ -29,10 +29,24 @@ class AlarmReceiver : BroadcastReceiver() {
             Logx.add("wake alarm skipped (inactive)")
             return
         }
+
+        // The gate starts with the morning — no manual Start needed. Dwell
+        // checks still require a deliberate per-task Start on the gate screen,
+        // so any start from an earlier preview expires with the wake alarm.
+        Gate.arm()
+        Gate.clearDwellStarts()
+        Logx.add("wake: gate auto-armed")
+
         if (!Gate.alarmPending()) {
-            Logx.add("wake alarm skipped (mission already done)")
+            Logx.add("wake: no pending alarm mission — gate up without ringing")
+            try {
+                GateService.start(context)
+            } catch (t: Throwable) {
+                Logx.add("gate start blocked: ${t.javaClass.simpleName}")
+            }
             return
         }
+
         Prefs.alarmRinging = true
         GateService.startAlarm(context)
     }

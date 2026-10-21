@@ -16,13 +16,16 @@ import android.view.KeyEvent
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 /**
- * The morning gate screen: task list with live verification progress, a phone
+ * The morning gate screen: compact shortcuts for allowed apps, the task list
+ * with live verification progress, a manual Start for each dwell task, a phone
  * button (calls always work) and the way into the emergency bypass screen.
  */
 class GateShellView(context: Context) : FrameLayout(context) {
@@ -32,6 +35,8 @@ class GateShellView(context: Context) : FrameLayout(context) {
     private val mainColumn: LinearLayout
     private val warningView: TextView
     private val summaryView: TextView
+    private val shortcutsScroll: HorizontalScrollView
+    private val shortcutsRow: LinearLayout
     private val tasksColumn: LinearLayout
     private val countdownView: TextView
     private val hintView: TextView
@@ -102,6 +107,23 @@ class GateShellView(context: Context) : FrameLayout(context) {
         )
         slp.topMargin = dp(16)
         mainColumn.addView(summaryView, slp)
+
+        shortcutsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        shortcutsScroll = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(shortcutsRow, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+            visibility = View.GONE
+        }
+        val shlp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        shlp.topMargin = dp(14)
+        mainColumn.addView(shortcutsScroll, shlp)
+        rebuildShortcuts()
 
         tasksColumn = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -250,7 +272,7 @@ class GateShellView(context: Context) : FrameLayout(context) {
     private fun buildKey(snap: GateSnapshot): String {
         val sb = StringBuilder()
         snap.tasks.forEach { t ->
-            sb.append(t.id).append(t.done).append('|')
+            sb.append(t.id).append(t.done).append(t.dwellStarted).append(t.dwellPending).append('|')
             t.crits.forEach { c ->
                 sb.append(c.index).append(c.type).append(c.done).append('|')
                 c.actions.forEach { a -> sb.append(a.label).append(',') }
@@ -336,6 +358,37 @@ class GateShellView(context: Context) : FrameLayout(context) {
                 }
             }
 
+            if (t.dwellPending && !t.dwellStarted) {
+                val start = TextView(context).apply {
+                    text = "▶  Start dwell"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setTextColor(0xFF0B0F14.toInt())
+                    setTypeface(typeface, Typeface.BOLD)
+                    setPadding(dp(14), dp(7), dp(14), dp(7))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dp(18).toFloat()
+                        setColor(0xFF66D19E.toInt())
+                    }
+                    isClickable = true
+                    setOnClickListener {
+                        Gate.startTask(t.id)
+                        Toast.makeText(
+                            context,
+                            "Dwell started — turn the screen off and put the phone down.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        refresh()
+                    }
+                }
+                val startLp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                startLp.topMargin = dp(10)
+                row.addView(start, startLp)
+            }
+
             val lp = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -359,6 +412,57 @@ class GateShellView(context: Context) : FrameLayout(context) {
                 }
             }
         }
+    }
+
+    // ------- allowed-app shortcuts -------
+
+    private fun rebuildShortcuts() {
+        shortcutsRow.removeAllViews()
+        val packages = Prefs.allowedApps.sortedBy { Apps.label(context, it).lowercase() }
+        shortcutsScroll.visibility = if (packages.isEmpty()) View.GONE else View.VISIBLE
+        for (pkg in packages) {
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            lp.marginEnd = dp(8)
+            shortcutsRow.addView(shortcutChip(pkg), lp)
+        }
+    }
+
+    /** A compact launch chip: app icon + name, small enough to sit above the tasks. */
+    private fun shortcutChip(pkg: String): View {
+        val chip = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(9), dp(6), dp(12), dp(6))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(16).toFloat()
+                setColor(0xFF1C2430.toInt())
+            }
+            isClickable = true
+            setOnClickListener {
+                if (!Apps.launch(context, pkg)) Logx.add("shortcut launch failed: $pkg")
+            }
+        }
+        val icon = runCatching { context.packageManager.getApplicationIcon(pkg) }.getOrNull()
+        if (icon != null) {
+            val iv = ImageView(context).apply {
+                setImageDrawable(icon)
+                setPadding(0, 0, 0, 0)
+            }
+            val ilp = LinearLayout.LayoutParams(dp(18), dp(18))
+            ilp.marginEnd = dp(7)
+            chip.addView(iv, ilp)
+        }
+        chip.addView(TextView(context).apply {
+            text = Apps.label(context, pkg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(0xFFE6EDF3.toInt())
+            maxLines = 1
+        })
+        return chip
     }
 
     // ------- actions -------

@@ -16,6 +16,8 @@ object Gate {
     private val done = HashSet<String>()
     private val dwell = HashMap<String, Int>()
     private val appTime = HashMap<String, Long>()
+    /** Tasks whose phone-away dwell the user deliberately started today. */
+    private val started = HashSet<String>()
     private var loaded = false
 
     fun init(context: Context) {
@@ -66,6 +68,7 @@ object Gate {
             done.clear()
             dwell.clear()
             appTime.clear()
+            started.clear()
             if (Prefs.alarmRinging) {
                 Prefs.alarmRinging = false
                 AlarmRinger.stop()
@@ -76,13 +79,21 @@ object Gate {
 
     // ---------- arming ----------
 
-    /** The gate only runs after the user taps Start (or the wake alarm is up). */
+    /** The gate arms itself at the wake time; this marks today's automatic session. */
     fun arm() {
         Prefs.armedDay = LocalDate.now().toString()
     }
 
     fun disarm() {
         Prefs.armedDay = ""
+        clearDwellStarts()
+    }
+
+    /** End manual dwell sessions, e.g. when the gate stops or a preview ends. */
+    fun clearDwellStarts() {
+        if (started.isEmpty()) return
+        started.clear()
+        persist()
     }
 
     fun armedToday(): Boolean = Prefs.armedDay == LocalDate.now().toString()
@@ -119,6 +130,11 @@ object Gate {
                     appTime[k] = aw.optLong(k, 0L)
                 }
             }
+            o.optJSONArray("started")?.let { sa ->
+                for (i in 0 until sa.length()) {
+                    sa.optString(i).takeIf { it.isNotBlank() }?.let { started.add(it) }
+                }
+            }
         } catch (t: Throwable) {
             Logx.add("progress parse failed: ${t.javaClass.simpleName}")
         }
@@ -135,6 +151,9 @@ object Gate {
         val aw = JSONObject()
         appTime.forEach { (k, v) -> aw.put(k, v) }
         o.put("apptime", aw)
+        val sa = JSONArray()
+        started.sorted().forEach { sa.put(it) }
+        o.put("started", sa)
         return o.toString()
     }
 
@@ -169,12 +188,30 @@ object Gate {
         dwell[key(taskId, idx)] = dwellSec(taskId, idx) + sec
     }
 
-    /** Pickup / screen-on resets every dwell clock that is still running. */
-    fun resetDwell() {
-        if (dwell.isNotEmpty()) {
-            dwell.clear()
-            persist()
-        }
+    /** Whether the user has deliberately started this task's phone-away dwell. */
+    fun isTaskStarted(taskId: String): Boolean = started.contains(taskId)
+
+    fun hasPendingDwell(task: Task): Boolean =
+        task.criteria.withIndex().any { (i, c) -> c.type == CType.DWELL && !isDone(task.id, i) }
+
+    /** Start the phone-away clock for one task. Dwell only accrues after this tap. */
+    fun startTask(taskId: String) {
+        if (!started.add(taskId)) return
+        persist()
+        val name = tasks.firstOrNull { it.id == taskId }?.name ?: taskId
+        Logx.add("dwell started: $name")
+    }
+
+    /**
+     * Pickup / screen-on ends the away session: accrued time is wiped and every
+     * dwell task must be started again. A bump while the phone is face-down
+     * only resets the clock, keeping the user's deliberate start.
+     */
+    fun resetDwell(clearStarted: Boolean = false) {
+        if (dwell.isEmpty() && (!clearStarted || started.isEmpty())) return
+        dwell.clear()
+        if (clearStarted) started.clear()
+        persist()
     }
 
     fun appTimeMs(taskId: String, idx: Int): Long = appTime[key(taskId, idx)] ?: 0L
@@ -199,8 +236,8 @@ object Gate {
     /**
      * Whether the gate should be running right now (ignoring preview/force).
      *
-     * Nothing starts on its own: either the user armed it for today, or the
-     * wake alarm is ringing. Dwell can therefore never accrue while asleep.
+     * The wake receiver arms the day automatically, so the gate comes up with
+     * the alarm. Dwell still can't accrue until each task is started by hand.
      */
     fun activeNow(): Boolean {
         if (!Prefs.enabled) return false
