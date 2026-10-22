@@ -93,6 +93,16 @@ object Prefs {
             s().edit().putStringSet("allowed_apps", HashSet(v)).apply()
         }
 
+    /**
+     * Turn the accessibility watch off when the day's tasks are complete and
+     * try to switch it back on shortly before the wake time.
+     */
+    var manageA11y: Boolean
+        get() = s().getBoolean("manage_a11y", true)
+        set(v) {
+            s().edit().putBoolean("manage_a11y", v).apply()
+        }
+
     /** The default "Wake up" alarm task is seeded exactly once. */
     var wakeSeeded: Boolean
         get() = s().getBoolean("wake_seeded", false)

@@ -18,8 +18,6 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.hardware.TriggerEvent
-import android.hardware.TriggerEventListener
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -31,8 +29,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
-import kotlin.math.abs
-import kotlin.math.sqrt
 
 // ---------- snapshot types the gate screen renders ----------
 
@@ -55,7 +51,7 @@ data class TaskView(
     val id: String,
     val name: String,
     val done: Boolean,
-    /** True once the user deliberately started this task's phone-away dwell. */
+    /** True while this task is the one running the single dwell timer. */
     val dwellStarted: Boolean,
     /** True while an unfinished dwell check is waiting to be started. */
     val dwellPending: Boolean,
@@ -89,7 +85,6 @@ class GateService : Service() {
         private const val CHANNEL_ID = "morning_gate"
         private const val NOTIF_ID = 1
 
-        private const val MOTION_GRACE_MS = 5_000L
         private const val TICK_MS = 1_000L
         private const val SELF_CHECK_MS = 20_000L
         private const val POLL_MS = 1_500L
@@ -148,11 +143,14 @@ class GateService : Service() {
             ScheduleEngine.sessionEndMs()?.let { Prefs.releaseUntilMs = it }
             Prefs.alarmRinging = false
             AlarmRinger.stop()
+            if (Prefs.manageA11y) A11y.disable(context)
             ScheduleEngine.scheduleNext(context)
             Logx.add("released for today (bypass)")
         }
 
         fun isRunning(): Boolean = instance != null
+
+        fun isPreview(): Boolean = instance?.forced == true
 
         fun snapshotNow(): GateSnapshot? = instance?.snapshot()
 
@@ -212,16 +210,12 @@ class GateService : Service() {
     private var settingsGraceUntilMs = 0L
     private var lastLoggedBlocked: String? = null
 
-    // idle / dwell tracking
+    // dwell / screen tracking
     private var screenOn = true
-    private var lastMotionMs = 0L
-    private var lastIdle = false
-    private var lastTickMs = 0L
     private var lastPersistMs = 0L
 
     // sensors
     private var sensorManager: SensorManager? = null
-    private var significantMotion: Sensor? = null
     private var stepSensor: Sensor? = null
     private var stepWatcherActive = false
     private val stepSamples = java.util.ArrayDeque<LongArray>() // [elapsedRealtimeMs, totalSteps]
@@ -274,9 +268,6 @@ class GateService : Service() {
 
                 val pm = getSystemService(PowerManager::class.java)
                 screenOn = pm?.isInteractive ?: true
-                lastTickMs = SystemClock.elapsedRealtime()
-                lastMotionMs = lastTickMs
-                lastIdle = false
                 releasing = false
 
                 ScheduleEngine.scheduleHeartbeat(this)
@@ -322,6 +313,9 @@ class GateService : Service() {
         unregisterScreenReceiver()
         teardownSensors()
         AlarmRinger.stop()
+        // A service restart mid-session must keep its dwell timer, but a
+        // stopped/released session must not leave one running overnight.
+        if (!Prefs.alarmRinging && !Gate.activeNow()) Gate.clearDwellStarts()
         super.onDestroy()
     }
 
@@ -474,6 +468,10 @@ class GateService : Service() {
      */
     private fun handleForeground(pkg: String?) {
         val p = pkg ?: return
+        // Keyboards are transient windows over the real app. Keep the current
+        // overlay state: typing inside an allowed app stays smooth, and a
+        // keyboard can never uncover an app the gate is blocking.
+        if (p in AllowedApps.inputMethodPackages(this)) return
         currentForeground = p
         if (auxActive) {
             setOverlayShown(false)
@@ -569,6 +567,7 @@ class GateService : Service() {
                     (!alarmMode && (over || !Gate.armedToday()))
                 if (inactive) {
                     Logx.add("self-check: session inactive")
+                    if (!forced && Prefs.manageA11y) A11y.disable(this@GateService)
                     shutdown()
                     return
                 }
@@ -601,54 +600,33 @@ class GateService : Service() {
 
     // ---------- dwell ----------
 
+    /**
+     * The dwell clock is clock time from the user's Start tap. It deliberately
+     * does not care whether the screen is on, the phone is moving, or another
+     * app is open. Only the single active task earns time; the timer is
+     * persisted in [Gate], so a service restart doesn't lose it.
+     */
     private fun dwellTick() {
-        val now = SystemClock.elapsedRealtime()
-        val deltaMs = if (lastTickMs == 0L) 0L
-        else (now - lastTickMs).coerceIn(0L, 4L * 60L * 60L * 1000L)
-        lastTickMs = now
-        // Dwell never runs while the wake alarm is up: lying still in bed is
-        // exactly what the alarm is supposed to break.
-        val idle = !alarmMode && !screenOn && (now - lastMotionMs) > MOTION_GRACE_MS
-        if (idle && lastIdle && deltaMs > 0) accrueDwell(deltaMs)
-        lastIdle = idle
-    }
-
-    private fun accrueDwell(deltaMs: Long) {
-        val sec = (deltaMs / 1000L).toInt()
-        if (sec <= 0) return
-        var changed = false
-        for (t in Gate.tasks) {
-            t.criteria.withIndex().forEach { (i, c) ->
-                // Dwell is opt-in per task: nothing accrues until the user
-                // taps Start, so the gate can arm itself at wake time without
-                // handing out phone-away credit to someone still in bed.
-                if (c.type == CType.DWELL && !Gate.isDone(t.id, i) && Gate.isTaskStarted(t.id)) {
-                    Gate.addDwell(t.id, i, sec)
-                    changed = true
-                    if (Gate.dwellSec(t.id, i) >= c.minutes * 60) {
-                        markDoneQuiet(t.id, i, "dwell")
-                    }
-                }
+        val taskId = Gate.activeDwellTaskId() ?: return
+        val task = Gate.tasks.firstOrNull { it.id == taskId }
+        if (task == null) {
+            Gate.clearDwellStarts()
+            return
+        }
+        var pendingDwell = false
+        task.criteria.withIndex().forEach { (i, c) ->
+            if (c.type != CType.DWELL || Gate.isDone(task.id, i)) return@forEach
+            if (Gate.dwellSec(task.id) >= c.minutes * 60) {
+                markDoneQuiet(task.id, i, "dwell")
+            } else {
+                pendingDwell = true
             }
         }
-        if (changed && SystemClock.elapsedRealtime() - lastPersistMs > PERSIST_EVERY_MS) {
-            lastPersistMs = SystemClock.elapsedRealtime()
-            Gate.persist()
+        // All of this task's dwell checks are satisfied: stop the one timer.
+        if (!pendingDwell) {
+            Gate.clearDwellStarts()
+            overlay?.refresh()
         }
-    }
-
-    private fun onInterruption(reason: String, endDwellSession: Boolean = false) {
-        var had = false
-        for (t in Gate.tasks) {
-            t.criteria.withIndex().forEach { (i, c) ->
-                if (c.type == CType.DWELL && !Gate.isDone(t.id, i) && Gate.dwellSec(t.id, i) > 0) {
-                    had = true
-                }
-            }
-        }
-        if (had) Logx.add("dwell reset: $reason")
-        Gate.resetDwell(clearStarted = endDwellSession)
-        overlay?.refresh()
     }
 
     private var screenRegistered = false
@@ -658,29 +636,19 @@ class GateService : Service() {
             when (i?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     if (!screenOn) return
-                    dwellTick()
                     screenOn = false
-                    lastIdle = false
                     // Don't resume the app-time clock from a stale foreground
                     // after the screen comes back.
                     lastPollFg = null
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     if (screenOn) return
-                    dwellTick() // accrue genuine idle time up to the wake
                     screenOn = true
-                    lastIdle = false
-                    onInterruption("screen on", endDwellSession = true)
                     // The alarm belongs on screen whenever the phone wakes.
                     if (alarmMode && !auxActive) showAlarmActivity()
                 }
                 Intent.ACTION_USER_PRESENT -> {
-                    if (!screenOn) {
-                        dwellTick()
-                        screenOn = true
-                    }
-                    lastIdle = false
-                    onInterruption("unlock", endDwellSession = true)
+                    if (!screenOn) screenOn = true
                 }
             }
         }
@@ -711,34 +679,6 @@ class GateService : Service() {
 
     // ---------- sensors ----------
 
-    private val motionTrigger = object : TriggerEventListener() {
-        override fun onTrigger(event: TriggerEvent?) {
-            registerSignificantMotion() // the trigger sensor disables itself after firing
-            lastMotionMs = SystemClock.elapsedRealtime()
-            lastIdle = false
-            onInterruption("movement")
-        }
-    }
-
-    private val accelListener = object : SensorEventListener {
-        private var lastMag = 0f
-        override fun onSensorChanged(e: SensorEvent?) {
-            val ev = e ?: return
-            val x = ev.values.getOrElse(0) { 0f }
-            val y = ev.values.getOrElse(1) { 0f }
-            val z = ev.values.getOrElse(2) { 0f }
-            val mag = sqrt(x * x + y * y + z * z)
-            if (lastMag != 0f && abs(mag - lastMag) > 2.0f) {
-                lastMotionMs = SystemClock.elapsedRealtime()
-                lastIdle = false
-                onInterruption("movement")
-            }
-            lastMag = mag
-        }
-
-        override fun onAccuracyChanged(s: Sensor?, a: Int) {}
-    }
-
     private val stepListener = object : SensorEventListener {
         override fun onSensorChanged(e: SensorEvent?) {
             val ev = e ?: return
@@ -757,42 +697,13 @@ class GateService : Service() {
         override fun onAccuracyChanged(s: Sensor?, a: Int) {}
     }
 
-    private fun registerSignificantMotion() {
-        val sm = sensorManager ?: return
-        val sensor = significantMotion ?: return
-        try {
-            sm.requestTriggerSensor(motionTrigger, sensor)
-        } catch (_: Throwable) {
-        }
-    }
-
     private fun setupSensors() {
         val sm = sensorManager ?: return
-        significantMotion = sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
-        if (significantMotion != null) {
-            registerSignificantMotion()
-        } else {
-            try {
-                sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
-                    sm.registerListener(accelListener, it, SensorManager.SENSOR_DELAY_UI)
-                }
-            } catch (_: Throwable) {
-            }
-        }
         stepSensor = sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         registerStepsIfNeeded()
     }
 
     private fun teardownSensors() {
-        val sm = sensorManager ?: return
-        try {
-            significantMotion?.let { sm.cancelTriggerSensor(motionTrigger, it) }
-        } catch (_: Throwable) {
-        }
-        try {
-            sm.unregisterListener(accelListener)
-        } catch (_: Throwable) {
-        }
         unregisterSteps()
     }
 
@@ -939,6 +850,7 @@ class GateService : Service() {
         releasing = true
         Logx.add("all tasks done — releasing")
         Toast.makeText(this, "Morning Gate: all tasks done. Good morning!", Toast.LENGTH_LONG).show()
+        if (!forced && Prefs.manageA11y) A11y.disable(this)
         ScheduleEngine.cancelHeartbeat(this)
         ScheduleEngine.scheduleNext(this)
         shutdown()
@@ -950,6 +862,7 @@ class GateService : Service() {
         if (!forced) ScheduleEngine.sessionEndMs()?.let { Prefs.releaseUntilMs = it }
         Prefs.alarmRinging = false
         AlarmRinger.stop()
+        if (!forced && Prefs.manageA11y) A11y.disable(this)
         Logx.add("released for today (bypass)")
         ScheduleEngine.cancelHeartbeat(this)
         ScheduleEngine.scheduleNext(this)
@@ -976,7 +889,7 @@ class GateService : Service() {
     private fun updateWarning() {
         val sb = StringBuilder()
         if (!Checks.isA11yEnabled(this)) {
-            sb.append("Accessibility watch is off — apps may leak through.\n")
+            sb.append("Accessibility watch is off — usage access still blocks apps, a switch may take a moment.\n")
         }
         val nfcPending = Gate.tasks.any { t ->
             t.criteria.withIndex().any { (i, c) -> c.type == CType.NFC && !Gate.isDone(t.id, i) }
@@ -1016,13 +929,16 @@ class GateService : Service() {
                 val done = Gate.isDone(t.id, i)
                 val actions = ArrayList<CritAction>()
                 val text = when (c.type) {
-                    CType.DWELL -> if (done) "Dwell · done" else {
-                        val acc = Gate.dwellSec(t.id, i)
-                        val base = "Dwell · ${Format.mmss(acc)} / ${Format.mmss(c.minutes * 60)}"
-                        when {
-                            !Gate.isTaskStarted(t.id) -> "$base · not started"
-                            screenOn -> "$base · screen off to run"
-                            else -> "$base · running"
+                    CType.DWELL -> if (done) {
+                        "Dwell · ${Format.mmss(c.minutes * 60)} · done"
+                    } else {
+                        val total = c.minutes * 60
+                        val acc = Gate.dwellSec(t.id).coerceAtMost(total)
+                        val base = "Dwell · ${Format.mmss(acc)} / ${Format.mmss(total)}"
+                        if (Gate.isTaskStarted(t.id)) {
+                            "$base · ${Format.mmss((total - acc).coerceAtLeast(0))} left"
+                        } else {
+                            "$base · tap Start"
                         }
                     }
                     CType.STEPS -> if (done) "Steps · done" else

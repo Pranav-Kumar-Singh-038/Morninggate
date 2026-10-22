@@ -23,11 +23,16 @@ object ScheduleEngine {
     const val ACTION_WAKE = "com.pranav.morninggate.action.WAKE"
     const val ACTION_RELEASE = "com.pranav.morninggate.action.RELEASE"
     const val ACTION_HEARTBEAT = "com.pranav.morninggate.action.HEARTBEAT"
+    const val ACTION_A11Y_ON = "com.pranav.morninggate.action.A11Y_ON"
 
     private const val RC_WAKE = 1001
     private const val RC_RELEASE = 1002
     private const val RC_HEARTBEAT = 1003
+    private const val RC_A11Y = 1004
     private const val HEARTBEAT_MS = 15L * 60L * 1000L
+
+    /** Re-enable the accessibility watch a few minutes before the gate arms. */
+    private const val A11Y_LEAD_MS = 5L * 60L * 1000L
 
     private fun startTime(): LocalTime = LocalTime.of(Prefs.startMinutes / 60, Prefs.startMinutes % 60)
     private fun endTime(): LocalTime = LocalTime.of(Prefs.endMinutes / 60, Prefs.endMinutes % 60)
@@ -116,8 +121,18 @@ object ScheduleEngine {
         }
         val wake = nextWake()
         val release = nextRelease()
-        setExact(context, millis(wake), pending(context, ACTION_WAKE, RC_WAKE))
+        val wakeMs = millis(wake)
+        setExact(context, wakeMs, pending(context, ACTION_WAKE, RC_WAKE))
         setExact(context, millis(release), pending(context, ACTION_RELEASE, RC_RELEASE))
+
+        val a11yPi = pending(context, ACTION_A11Y_ON, RC_A11Y)
+        val a11yMs = wakeMs - A11Y_LEAD_MS
+        if (Prefs.manageA11y && a11yMs > System.currentTimeMillis()) {
+            setExact(context, a11yMs, a11yPi)
+        } else {
+            (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(a11yPi)
+        }
+
         val f = DateTimeFormatter.ofPattern("EEE HH:mm")
         Logx.add("schedule: wake ${wake.format(f)} · release ${release.format(f)}")
     }
@@ -143,5 +158,6 @@ object ScheduleEngine {
         am.cancel(pending(context, ACTION_WAKE, RC_WAKE))
         am.cancel(pending(context, ACTION_RELEASE, RC_RELEASE))
         am.cancel(pending(context, ACTION_HEARTBEAT, RC_HEARTBEAT))
+        am.cancel(pending(context, ACTION_A11Y_ON, RC_A11Y))
     }
 }

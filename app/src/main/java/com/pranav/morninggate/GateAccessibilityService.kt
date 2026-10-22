@@ -11,12 +11,25 @@ import android.view.accessibility.AccessibilityEvent
  */
 class GateAccessibilityService : AccessibilityService() {
 
+    companion object {
+        @Volatile
+        var instance: GateAccessibilityService? = null
+            private set
+    }
+
     private val handler = Handler(Looper.getMainLooper())
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         Prefs.init(this)
         Logx.add("a11y: connected")
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        Logx.add("a11y: disconnected")
+        super.onDestroy()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {

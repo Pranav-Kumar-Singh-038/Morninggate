@@ -17,7 +17,8 @@ enum class CType {
 /**
  * One completion check inside a task.
  *
- * - DWELL:    [minutes] of phone-away dwell (screen off, untouched, still).
+ * - DWELL:    [minutes] of clock time after the user taps Start on the gate
+ *             screen. No screen-off or still-phone requirement.
  * - STEPS:    [steps] steps within any [windowMin]-minute window.
  * - NFC:      the bound tag's UID must be tapped ([tagId] empty = not bound yet).
  * - QR/BC:    scanned payload must equal [payload] (empty = not bound yet);
@@ -129,7 +130,7 @@ object Model {
     }
 
     fun critSummary(context: Context, c: Criterion): String = when (c.type) {
-        CType.DWELL -> "${c.minutes} min phone-away"
+        CType.DWELL -> "${c.minutes} min dwell timer"
         CType.STEPS -> "${c.steps} steps within ${c.windowMin} min"
         CType.NFC -> if (c.tagId.isBlank()) "NFC tag (not bound)" else "NFC tag"
         CType.QR -> if (c.payload.isBlank()) "QR code (not set)" else "QR code · ${codeRef(c)}"

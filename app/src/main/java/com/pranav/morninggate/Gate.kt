@@ -14,10 +14,14 @@ object Gate {
 
     private var taskCache: MutableList<Task>? = null
     private val done = HashSet<String>()
-    private val dwell = HashMap<String, Int>()
     private val appTime = HashMap<String, Long>()
-    /** Tasks whose phone-away dwell the user deliberately started today. */
-    private val started = HashSet<String>()
+    /**
+     * One dwell timer runs at a time. These fields persist its start so the
+     * countdown survives a service restart. The elapsed time is clock time:
+     * dwell no longer needs the screen off or the phone still.
+     */
+    private var dwellTaskId: String? = null
+    private var dwellStartMs: Long = 0L
     private var loaded = false
 
     fun init(context: Context) {
@@ -66,9 +70,9 @@ object Gate {
         if (Prefs.day != today) {
             Prefs.day = today
             done.clear()
-            dwell.clear()
             appTime.clear()
-            started.clear()
+            dwellTaskId = null
+            dwellStartMs = 0L
             if (Prefs.alarmRinging) {
                 Prefs.alarmRinging = false
                 AlarmRinger.stop()
@@ -89,10 +93,11 @@ object Gate {
         clearDwellStarts()
     }
 
-    /** End manual dwell sessions, e.g. when the gate stops or a preview ends. */
+    /** Stop the running dwell timer, e.g. when the gate stops or a preview ends. */
     fun clearDwellStarts() {
-        if (started.isEmpty()) return
-        started.clear()
+        if (dwellTaskId == null && dwellStartMs == 0L) return
+        dwellTaskId = null
+        dwellStartMs = 0L
         persist()
     }
 
@@ -116,13 +121,6 @@ object Gate {
             val o = JSONObject(json)
             val da = o.optJSONArray("done") ?: JSONArray()
             for (i in 0 until da.length()) da.optString(i).takeIf { it.isNotBlank() }?.let { done.add(it) }
-            o.optJSONObject("dwell")?.let { dw ->
-                val it = dw.keys()
-                while (it.hasNext()) {
-                    val k = it.next()
-                    dwell[k] = dw.optInt(k, 0)
-                }
-            }
             o.optJSONObject("apptime")?.let { aw ->
                 val it = aw.keys()
                 while (it.hasNext()) {
@@ -130,10 +128,9 @@ object Gate {
                     appTime[k] = aw.optLong(k, 0L)
                 }
             }
-            o.optJSONArray("started")?.let { sa ->
-                for (i in 0 until sa.length()) {
-                    sa.optString(i).takeIf { it.isNotBlank() }?.let { started.add(it) }
-                }
+            o.optString("dwell_task", "").takeIf { it.isNotBlank() }?.let { t ->
+                dwellTaskId = t
+                dwellStartMs = o.optLong("dwell_since", System.currentTimeMillis())
             }
         } catch (t: Throwable) {
             Logx.add("progress parse failed: ${t.javaClass.simpleName}")
@@ -145,15 +142,13 @@ object Gate {
         val da = JSONArray()
         done.sorted().forEach { da.put(it) }
         o.put("done", da)
-        val dw = JSONObject()
-        dwell.forEach { (k, v) -> dw.put(k, v) }
-        o.put("dwell", dw)
         val aw = JSONObject()
         appTime.forEach { (k, v) -> aw.put(k, v) }
         o.put("apptime", aw)
-        val sa = JSONArray()
-        started.sorted().forEach { sa.put(it) }
-        o.put("started", sa)
+        dwellTaskId?.let {
+            o.put("dwell_task", it)
+            o.put("dwell_since", dwellStartMs)
+        }
         return o.toString()
     }
 
@@ -182,36 +177,40 @@ object Gate {
 
     fun allDone(): Boolean = tasks.isNotEmpty() && tasks.all { taskDone(it) }
 
-    fun dwellSec(taskId: String, idx: Int): Int = dwell[key(taskId, idx)] ?: 0
-
-    fun addDwell(taskId: String, idx: Int, sec: Int) {
-        dwell[key(taskId, idx)] = dwellSec(taskId, idx) + sec
+    /** Elapsed seconds of the single running dwell timer for [taskId] (0 when it is not running). */
+    fun dwellSec(taskId: String): Int {
+        if (dwellTaskId != taskId || dwellStartMs <= 0L) return 0
+        return ((System.currentTimeMillis() - dwellStartMs) / 1000L).toInt().coerceAtLeast(0)
     }
 
-    /** Whether the user has deliberately started this task's phone-away dwell. */
-    fun isTaskStarted(taskId: String): Boolean = started.contains(taskId)
+    /** The task whose dwell timer is running right now, if any. */
+    fun activeDwellTaskId(): String? = dwellTaskId
+
+    /** Whether this particular task is the one running its dwell timer. */
+    fun isTaskStarted(taskId: String): Boolean = dwellTaskId == taskId
 
     fun hasPendingDwell(task: Task): Boolean =
         task.criteria.withIndex().any { (i, c) -> c.type == CType.DWELL && !isDone(task.id, i) }
 
-    /** Start the phone-away clock for one task. Dwell only accrues after this tap. */
-    fun startTask(taskId: String) {
-        if (!started.add(taskId)) return
-        persist()
-        val name = tasks.firstOrNull { it.id == taskId }?.name ?: taskId
-        Logx.add("dwell started: $name")
-    }
-
     /**
-     * Pickup / screen-on ends the away session: accrued time is wiped and every
-     * dwell task must be started again. A bump while the phone is face-down
-     * only resets the clock, keeping the user's deliberate start.
+     * Start the clock for [taskId]. Only one task may run a dwell timer at a
+     * time: starting another task replaces (and resets) the previous one, so
+     * two morning tasks can never collect dwell credit together.
      */
-    fun resetDwell(clearStarted: Boolean = false) {
-        if (dwell.isEmpty() && (!clearStarted || started.isEmpty())) return
-        dwell.clear()
-        if (clearStarted) started.clear()
+    fun startTask(taskId: String) {
+        val task = tasks.firstOrNull { it.id == taskId } ?: return
+        if (!hasPendingDwell(task)) return
+        if (dwellTaskId == taskId) return
+        val previous = dwellTaskId
+        dwellTaskId = taskId
+        dwellStartMs = System.currentTimeMillis()
         persist()
+        if (previous != null) {
+            val prevName = tasks.firstOrNull { it.id == previous }?.name ?: previous
+            Logx.add("dwell switched: $prevName -> ${task.name} (previous timer reset)")
+        } else {
+            Logx.add("dwell started: ${task.name}")
+        }
     }
 
     fun appTimeMs(taskId: String, idx: Int): Long = appTime[key(taskId, idx)] ?: 0L
@@ -220,8 +219,8 @@ object Gate {
         appTime[key(taskId, idx)] = appTimeMs(taskId, idx) + ms
     }
 
-    /** Apps the gate may release into right now: the user's allowed list plus the
-     *  apps that incomplete app-time tasks still need. */
+    /** Apps the gate may release into right now: the user's allowed list plus
+     *  the apps that incomplete app-time tasks still need. */
     fun allowedPackages(): Set<String> {
         val out = HashSet<String>()
         out.addAll(Prefs.allowedApps)

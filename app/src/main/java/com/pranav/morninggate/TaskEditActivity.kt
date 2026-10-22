@@ -159,9 +159,9 @@ class TaskEditActivity : Activity() {
         col.addView(
             body(
                 "When on, the phone rings loudly at the wake time (${Format.minutes(Prefs.startMinutes)}) " +
-                    "and only stops once this task's checks are verified. Phone-away dwell can't be " +
-                    "used here — you'd be asleep, which is the whole point. The gate itself arms " +
-                    "automatically at the wake time."
+                    "and only stops once this task's checks are verified. Dwell can't be used here — " +
+                    "you'd be asleep, which is the whole point. The gate itself arms automatically " +
+                    "at the wake time."
             )
         )
 
@@ -264,11 +264,12 @@ class TaskEditActivity : Activity() {
 
         when (d.crit.type) {
             CType.DWELL -> {
-                card.addView(paramRow("Minutes of phone-away", d.crit.minutes) { d.minutesEdit = it })
+                card.addView(paramRow("Minutes", d.crit.minutes) { d.minutesEdit = it })
                 card.addView(
                     statusLine(
-                        "Dwell only runs after you tap Start dwell on the gate screen, then " +
-                            "turn the screen off and put the phone down."
+                        "The timer starts when you tap Start dwell on the gate screen. It counts " +
+                            "clock time even while you keep using the phone, and only one dwell " +
+                            "task can run at a time."
                     )
                 )
             }
@@ -409,7 +410,7 @@ class TaskEditActivity : Activity() {
             }
         }
         if (auto && drafts.any { it.crit.type == CType.DWELL }) {
-            toast("Auto-start tasks can't use phone-away dwell — swap it for steps, a tag or a code")
+            toast("Auto-start tasks can't use dwell — swap it for steps, a tag or a code")
             return
         }
         val id = taskId ?: Model.newId()

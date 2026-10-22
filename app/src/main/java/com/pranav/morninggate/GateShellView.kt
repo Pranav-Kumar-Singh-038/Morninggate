@@ -10,6 +10,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -34,6 +35,7 @@ class GateShellView(context: Context) : FrameLayout(context) {
 
     private val mainColumn: LinearLayout
     private val warningView: TextView
+    private val a11yView: TextView
     private val summaryView: TextView
     private val shortcutsScroll: HorizontalScrollView
     private val shortcutsRow: LinearLayout
@@ -95,6 +97,35 @@ class GateShellView(context: Context) : FrameLayout(context) {
         )
         wlp.topMargin = dp(12)
         mainColumn.addView(warningView, wlp)
+
+        a11yView = TextView(context).apply {
+            text = "Accessibility is off — tap to turn the watch on"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(0xFF0B0F14.toInt())
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(16).toFloat()
+                setColor(0xFF66D19E.toInt())
+            }
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener {
+                GateService.openSettings(
+                    context,
+                    Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                )
+                Toast.makeText(context, "Turn on Morning Gate accessibility", Toast.LENGTH_LONG).show()
+            }
+        }
+        val alpi = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        )
+        alpi.topMargin = dp(10)
+        alpi.gravity = Gravity.CENTER_HORIZONTAL
+        mainColumn.addView(a11yView, alpi)
 
         summaryView = TextView(context).apply {
             setTextColor(Color.WHITE)
@@ -261,6 +292,8 @@ class GateShellView(context: Context) : FrameLayout(context) {
             warningView.text = w.trim()
             warningView.visibility = View.VISIBLE
         }
+        a11yView.visibility =
+            if (Prefs.manageA11y && !Checks.isA11yEnabled(context)) View.VISIBLE else View.GONE
         val key = buildKey(snap)
         if (key != lastKey) {
             lastKey = key
@@ -372,12 +405,14 @@ class GateShellView(context: Context) : FrameLayout(context) {
                     }
                     isClickable = true
                     setOnClickListener {
+                        val previous = Gate.activeDwellTaskId()
                         Gate.startTask(t.id)
-                        Toast.makeText(
-                            context,
-                            "Dwell started — turn the screen off and put the phone down.",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        val msg = if (previous != null && previous != t.id) {
+                            "Dwell switched to ${t.name} — the other timer was reset."
+                        } else {
+                            "Dwell timer started — it keeps running while you use the phone."
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         refresh()
                     }
                 }

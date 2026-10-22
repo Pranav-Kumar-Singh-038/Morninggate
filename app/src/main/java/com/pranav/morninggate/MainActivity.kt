@@ -5,6 +5,8 @@ import android.app.Activity
 import android.app.AlarmManager
 import android.app.AlertDialog
 import android.app.TimePickerDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -34,6 +36,7 @@ class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
     private lateinit var enableSwitch: Switch
+    private lateinit var manageA11ySwitch: Switch
     private lateinit var gateToggle: Button
     private lateinit var startButton: Button
     private lateinit var endButton: Button
@@ -208,6 +211,32 @@ class MainActivity : Activity() {
             )
         )
 
+        col.addView(header("Accessibility watch"))
+        manageA11ySwitch = Switch(this).apply {
+            text = "Turn accessibility off after the morning"
+            setTextColor(Color.WHITE)
+            isChecked = Prefs.manageA11y
+            setOnCheckedChangeListener { _, checked ->
+                Prefs.manageA11y = checked
+                if (!checked) Alerts.cancelAccessibilityNeeded(this@MainActivity)
+                ScheduleEngine.scheduleNext(this@MainActivity)
+                refresh()
+            }
+        }
+        col.addView(manageA11ySwitch, lp())
+        col.addView(
+            body(
+                "When every task is verified (or the gate is bypassed/released for the day), " +
+                    "the accessibility watch is switched off so banking and payment apps stop " +
+                    "seeing it. Five minutes before the wake time the app tries to switch it " +
+                    "back on. Android only permits that automatic re-enable if you grant the " +
+                    "one-time ADB permission below; without it you still get a reminder " +
+                    "notification and a button in the gate screen.",
+                12f,
+                0xFF5A6472.toInt()
+            )
+        )
+
         col.addView(header("Permissions"))
         permsColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(permsColumn)
@@ -220,6 +249,9 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
+        if (manageA11ySwitch.isChecked != Prefs.manageA11y) {
+            manageA11ySwitch.isChecked = Prefs.manageA11y
+        }
         val running = GateService.isRunning()
         val ringing = Prefs.alarmRinging
         val releasedToday = System.currentTimeMillis() < Prefs.releaseUntilMs
@@ -230,9 +262,10 @@ class MainActivity : Activity() {
 
         introView.text = "At the wake time the gate comes up on its own and the alarm rings " +
             "until the mission is done. Every app stays blocked until each task is verified. " +
-            "Dwell tasks need a manual Start on the gate screen — then put the phone down. " +
-            "Releases at ${Format.minutes(Prefs.endMinutes)} no matter what — and the phone " +
-            "always works for calls."
+            "Dwell tasks are one-at-a-time timers: tap Start on the gate screen and the clock " +
+            "runs until the task is complete, even while you use the phone. Releases at " +
+            "${Format.minutes(Prefs.endMinutes)} no matter what — and the phone always works " +
+            "for calls."
 
         statusView.text = when {
             ringing -> "⏰  WAKE ALARM — finish: ${Gate.alarmPendingNames()}"
@@ -285,6 +318,7 @@ class MainActivity : Activity() {
             return
         }
         Gate.disarm()
+        if (!GateService.isPreview() && Prefs.manageA11y) A11y.disable(this)
         GateService.stop(this)
         ScheduleEngine.cancelHeartbeat(this)
         Logx.add("gate stopped by user")
@@ -322,7 +356,7 @@ class MainActivity : Activity() {
         if (tasks.isEmpty()) {
             tasksColumn.addView(body("No tasks yet — add one below or tap a preset.", 13f, 0xFF5A6472.toInt()))
         }
-        for (t in tasks) {
+        for ((index, t) in tasks.withIndex()) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = cardBg()
@@ -340,6 +374,8 @@ class MainActivity : Activity() {
                 setTypeface(typeface, Typeface.BOLD)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             if (!locked) {
+                nameRow.addView(moveControl("↑", index > 0) { moveTask(t, -1) })
+                nameRow.addView(moveControl("↓", index < tasks.lastIndex) { moveTask(t, 1) })
                 nameRow.addView(Button(this).apply {
                     text = "×"
                     setOnClickListener { confirmDelete(t) }
@@ -401,6 +437,30 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun moveControl(label: String, enabled: Boolean, action: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setTextColor(if (enabled) 0xFFE6EDF3.toInt() else 0xFF3F4753.toInt())
+            setPadding(dp(10), dp(2), dp(10), dp(2))
+            isClickable = enabled
+            isEnabled = enabled
+            setOnClickListener { action() }
+        }
+
+    /** Move a task up/down; this is the custom order the gate screen also uses. */
+    private fun moveTask(task: Task, delta: Int) {
+        val list = Gate.tasks.toMutableList()
+        val from = list.indexOfFirst { it.id == task.id }
+        val to = from + delta
+        if (from < 0 || to !in list.indices) return
+        val moved = list.removeAt(from)
+        list.add(to, moved)
+        Gate.saveTasks(list)
+        Logx.add("task order: ${task.name} ${if (delta < 0) "up" else "down"}")
+        refresh()
+    }
+
     private fun addPreset(name: String, crits: List<Criterion>) {
         val list = Gate.tasks.toMutableList()
         if (list.any { it.name.equals(name, ignoreCase = true) }) {
@@ -435,6 +495,9 @@ class MainActivity : Activity() {
         addPerm("Accessibility watch", Checks.isA11yEnabled(this)) {
             toast("If the toggle is greyed out: App info → ⋮ → Allow restricted settings")
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+        addPerm("Auto-re-enable accessibility (ADB)", A11y.canAutoToggle(this)) {
+            showA11yGrantDialog()
         }
         addPerm("Usage access (fallback)", Checks.hasUsageAccess(this)) {
             startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
@@ -475,6 +538,27 @@ class MainActivity : Activity() {
         addPerm("Camera (QR / barcode)", hasCamera()) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 102)
         }
+    }
+
+    private fun showA11yGrantDialog() {
+        val cmd = "adb shell pm grant $packageName android.permission.WRITE_SECURE_SETTINGS"
+        AlertDialog.Builder(this)
+            .setTitle("Optional: automatic accessibility toggle")
+            .setMessage(
+                "Android does not let an app switch accessibility on by itself.\n\n" +
+                    "With USB debugging enabled, run this once from a computer:\n\n" +
+                    cmd +
+                    "\n\nWithout the grant, Morning Gate still switches the watch off when the " +
+                    "day's tasks are done and posts a reminder to switch it back on before the " +
+                    "wake time. The gate itself keeps working through usage access."
+            )
+            .setPositiveButton("Copy command") { _, _ ->
+                val clipboard = getSystemService(ClipboardManager::class.java)
+                clipboard?.setPrimaryClip(ClipData.newPlainText("ADB command", cmd))
+                toast("ADB command copied")
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun addPerm(name: String, ok: Boolean, action: () -> Unit) {

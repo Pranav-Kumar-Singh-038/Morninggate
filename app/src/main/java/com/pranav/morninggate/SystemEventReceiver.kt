@@ -22,6 +22,7 @@ class SystemEventReceiver : BroadcastReceiver() {
             }
         } else {
             GateService.stop(context)
+            Gate.clearDwellStarts()
         }
     }
 }

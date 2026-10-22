@@ -18,6 +18,18 @@ class AlarmReceiver : BroadcastReceiver() {
             ScheduleEngine.ACTION_WAKE -> wakeAlarm(context)
             ScheduleEngine.ACTION_RELEASE -> releaseAlarm(context)
             ScheduleEngine.ACTION_HEARTBEAT -> heartbeat(context)
+            ScheduleEngine.ACTION_A11Y_ON -> enableAccessibility(context)
+        }
+    }
+
+    /** A few minutes before wake: make sure the accessibility watch is back on. */
+    private fun enableAccessibility(context: Context) {
+        if (!Prefs.enabled || !Prefs.manageA11y) return
+        if (Gate.tasks.isEmpty() || Gate.allDone()) return
+        if (A11y.enable(context)) {
+            Alerts.cancelAccessibilityNeeded(context)
+        } else if (!Checks.isA11yEnabled(context)) {
+            Alerts.notifyAccessibilityNeeded(context)
         }
     }
 
@@ -33,6 +45,7 @@ class AlarmReceiver : BroadcastReceiver() {
         // The gate starts with the morning — no manual Start needed. Dwell
         // checks still require a deliberate per-task Start on the gate screen,
         // so any start from an earlier preview expires with the wake alarm.
+        enableAccessibility(context)
         Gate.arm()
         Gate.clearDwellStarts()
         Logx.add("wake: gate auto-armed")
@@ -54,6 +67,8 @@ class AlarmReceiver : BroadcastReceiver() {
     private fun releaseAlarm(context: Context) {
         Prefs.alarmRinging = false
         AlarmRinger.stop()
+        if (Prefs.manageA11y) A11y.disable(context)
+        Gate.clearDwellStarts()
         ScheduleEngine.cancelHeartbeat(context)
         GateService.stop(context)
         Logx.add("released (window end)")
