@@ -183,6 +183,15 @@ class GateService : Service() {
             instance?.onTaskManuallyDoneNow()
         }
 
+        /** A runtime permission was granted; retry the sensor that needs it. */
+        fun onPermissionChanged() {
+            instance?.let {
+                it.setupSensors()
+                it.updateWarning()
+                it.overlay?.refresh()
+            }
+        }
+
         fun alarmPauseRemainingSec(): Int {
             val svc = instance ?: return 0
             if (!svc.alarmPaused) return 0
@@ -242,6 +251,7 @@ class GateService : Service() {
     private var currentForeground: String? = null
     private var firstUsagePoll = true
     private var releasing = false
+    private var sessionRan = false
     private var settingsGraceUntilMs = 0L
     private var lastLoggedBlocked: String? = null
 
@@ -297,6 +307,7 @@ class GateService : Service() {
                 }
 
                 startInForeground()
+                sessionRan = true
                 ensureOverlay()
                 registerScreenReceiver()
                 setupSensors()
@@ -353,6 +364,11 @@ class GateService : Service() {
         teardownSensors()
         AlarmRinger.stop()
         Alerts.cancelWakeMission(this)
+        // End-of-session cleanup. Skip a service kill mid-session (the gate is
+        // still armed, or the alarm is still ringing) and previews.
+        if (sessionRan && !forced && !Prefs.alarmRinging && !Gate.activeNow()) {
+            Access.revokeSessionOnly(this)
+        }
         // A service restart mid-session must keep its dwell timer, but a
         // stopped/released session must not leave one running overnight.
         if (!Prefs.alarmRinging && !Gate.activeNow()) Gate.clearDwellStarts()
@@ -598,6 +614,9 @@ class GateService : Service() {
 
     private val selfCheck = object : Runnable {
         override fun run() {
+            // A steps check may have been granted ACTIVITY_RECOGNITION after
+            // the service started (the alarm screen asks for it), so retry.
+            registerStepsIfNeeded()
             if (!forced) {
                 val released = System.currentTimeMillis() < Prefs.releaseUntilMs
                 val over = ScheduleEngine.sessionEnd() == null

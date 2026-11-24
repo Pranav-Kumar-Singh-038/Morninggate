@@ -1,7 +1,9 @@
 package com.pranav.morninggate
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -28,11 +30,16 @@ import java.time.format.DateTimeFormatter
  */
 class AlarmActivity : Activity() {
 
+    private companion object {
+        const val REQ_ACTIVITY = 41
+    }
+
     private val handler = Handler(Looper.getMainLooper())
     private val clockFmt = DateTimeFormatter.ofPattern("h:mm a")
 
     private lateinit var clockView: TextView
     private lateinit var statusView: TextView
+    private lateinit var warningView: TextView
     private lateinit var missionColumn: LinearLayout
     private lateinit var doneButton: Button
 
@@ -55,6 +62,7 @@ class AlarmActivity : Activity() {
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         setContentView(buildUi())
+        requestMissingActivityPermission()
     }
 
     override fun onResume() {
@@ -122,6 +130,15 @@ class AlarmActivity : Activity() {
             setLineSpacing(0f, 1.2f)
         }, topMargin(8))
 
+        warningView = TextView(this).apply {
+            setTextColor(0xFFE5534B.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.15f)
+            visibility = View.GONE
+        }
+        root.addView(warningView, topMargin(8))
+
         missionColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this)
         scroll.addView(
@@ -186,6 +203,13 @@ class AlarmActivity : Activity() {
 
         val tasks = Gate.tasks.filter { it.autoStart }
         val snap = GateService.snapshotNow()
+        val warning = snap?.warning
+        if (warning.isNullOrBlank()) {
+            warningView.visibility = View.GONE
+        } else {
+            warningView.text = warning.trim()
+            warningView.visibility = View.VISIBLE
+        }
         val key = buildKey(tasks, snap, ringing)
         if (key != lastKey) {
             lastKey = key
@@ -339,6 +363,39 @@ class AlarmActivity : Activity() {
                 Logx.add("launch failed: ${a.pkg}")
             }
         }
+    }
+
+    // ---------------- permissions ----------------
+
+    /**
+     * Camera / activity are revoked after each session (see [Access]). When a
+     * steps check is still pending, ask for activity access right here so the
+     * morning doesn't get stuck behind a permission dialog the user never sees.
+     */
+    private fun requestMissingActivityPermission() {
+        val needsSteps = Gate.tasks.any { t ->
+            t.criteria.withIndex().any { (i, c) ->
+                c.type == CType.STEPS && !Gate.isDone(t.id, i)
+            }
+        }
+        if (!needsSteps) return
+        if (checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), REQ_ACTIVITY)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_ACTIVITY) return
+        GateService.onPermissionChanged()
+        render()
     }
 
     // ---------------- helpers ----------------
