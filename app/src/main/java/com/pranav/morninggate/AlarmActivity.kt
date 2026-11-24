@@ -114,7 +114,8 @@ class AlarmActivity : Activity() {
         root.addView(statusView, topMargin(4))
 
         root.addView(TextView(this).apply {
-            text = "The alarm keeps ringing until every check below is verified."
+            text = "The alarm keeps ringing until every check below is verified. " +
+                "Opening a scan or NFC check pauses it for 30 seconds."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             setTextColor(0xFF8A94A6.toInt())
             gravity = Gravity.CENTER
@@ -166,10 +167,17 @@ class AlarmActivity : Activity() {
     private fun render() {
         clockView.text = LocalTime.now().format(clockFmt)
         val ringing = Prefs.alarmRinging
+        val paused = ringing && GateService.isAlarmPaused()
         if (ringing) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            statusView.text = "⏰  WAKE UP"
-            statusView.setTextColor(0xFFE5534B.toInt())
+            if (paused) {
+                statusView.text =
+                    "⏸  ALARM PAUSED · ${GateService.alarmPauseRemainingSec()}s"
+                statusView.setTextColor(0xFFFFC46B.toInt())
+            } else {
+                statusView.text = "⏰  WAKE UP"
+                statusView.setTextColor(0xFFE5534B.toInt())
+            }
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             statusView.text = "Alarm off — good morning"

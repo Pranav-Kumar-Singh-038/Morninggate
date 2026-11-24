@@ -91,6 +91,9 @@ class GateService : Service() {
         private const val PERSIST_EVERY_MS = 15_000L
         private const val SETTINGS_GRACE_MS = 45_000L
 
+        /** How long a scan / NFC check may silence the alarm before it rings again. */
+        private const val ALARM_PAUSE_MS = 30_000L
+
         @Volatile
         private var instance: GateService? = null
 
@@ -143,6 +146,7 @@ class GateService : Service() {
             ScheduleEngine.sessionEndMs()?.let { Prefs.releaseUntilMs = it }
             Prefs.alarmRinging = false
             AlarmRinger.stop()
+            Alerts.cancelWakeMission(context)
             if (Prefs.manageA11y) A11y.disable(context)
             ScheduleEngine.scheduleNext(context)
             Logx.add("released for today (bypass)")
@@ -159,7 +163,26 @@ class GateService : Service() {
         }
 
         fun requestRefresh() {
-            instance?.overlay?.refresh()
+            instance?.let {
+                it.overlay?.refresh()
+                it.updateAlarmState()
+            }
+        }
+
+        /**
+         * Silence the ringing alarm for [ALARM_PAUSE_MS] while the user opens a
+         * QR / barcode / NFC check. Returns true when a ring was actually
+         * paused; the caller can then tell the user why it went quiet.
+         */
+        fun pauseAlarmForCheck(): Boolean = instance?.pauseAlarmForCheckNow() ?: false
+
+        fun isAlarmPaused(): Boolean = instance?.alarmPaused == true
+
+        fun alarmPauseRemainingSec(): Int {
+            val svc = instance ?: return 0
+            if (!svc.alarmPaused) return 0
+            val left = svc.alarmResumeAtMs - SystemClock.elapsedRealtime()
+            return (left / 1000L).toInt().coerceAtLeast(0)
         }
 
         fun onAuxResume() {
@@ -204,6 +227,13 @@ class GateService : Service() {
     private var forced = false
     private var alarmMode = false
     private var auxActive = false
+
+    // Alarm pause: a scan / NFC check silences the ring for a short while, then
+    // the ticker's mission check decides whether it should come back.
+    @Volatile
+    private var alarmPaused = false
+    @Volatile
+    private var alarmResumeAtMs = 0L
     private var currentForeground: String? = null
     private var firstUsagePoll = true
     private var releasing = false
@@ -281,7 +311,11 @@ class GateService : Service() {
 
                 if (alarmMode) {
                     Prefs.alarmRinging = true
+                    alarmPaused = false
+                    alarmResumeAtMs = 0L
+                    handler.removeCallbacks(resumeAlarm)
                     AlarmRinger.start(this)
+                    Alerts.notifyWakeMission(this, Gate.alarmPendingNames(), paused = false)
                     showAlarmActivity()
                     Logx.add("wake alarm ringing")
                 }
@@ -313,6 +347,7 @@ class GateService : Service() {
         unregisterScreenReceiver()
         teardownSensors()
         AlarmRinger.stop()
+        Alerts.cancelWakeMission(this)
         // A service restart mid-session must keep its dwell timer, but a
         // stopped/released session must not leave one running overnight.
         if (!Prefs.alarmRinging && !Gate.activeNow()) Gate.clearDwellStarts()
@@ -591,6 +626,29 @@ class GateService : Service() {
         }
     }
 
+    private val resumeAlarm = Runnable {
+        if (!alarmMode || !Prefs.alarmRinging) return@Runnable
+        alarmPaused = false
+        alarmResumeAtMs = 0L
+        if (Gate.alarmPending()) {
+            AlarmRinger.start(this)
+            Alerts.notifyWakeMission(this, Gate.alarmPendingNames(), paused = false)
+            Logx.add("alarm resumed after check pause")
+        }
+    }
+
+    private fun pauseAlarmForCheckNow(): Boolean {
+        if (!alarmMode || !Prefs.alarmRinging || !Gate.alarmPending()) return false
+        alarmPaused = true
+        alarmResumeAtMs = SystemClock.elapsedRealtime() + ALARM_PAUSE_MS
+        AlarmRinger.stop()
+        handler.removeCallbacks(resumeAlarm)
+        handler.postDelayed(resumeAlarm, ALARM_PAUSE_MS)
+        Alerts.notifyWakeMission(this, Gate.alarmPendingNames(), paused = true)
+        Logx.add("alarm paused ${ALARM_PAUSE_MS / 1000}s for a check")
+        return true
+    }
+
     private val usagePoll = object : Runnable {
         override fun run() {
             pollUsageOnce()
@@ -814,8 +872,12 @@ class GateService : Service() {
         if (!missionDone && !cleared) return
 
         alarmMode = false
+        alarmPaused = false
+        alarmResumeAtMs = 0L
+        handler.removeCallbacks(resumeAlarm)
         Prefs.alarmRinging = false
         AlarmRinger.stop()
+        Alerts.cancelWakeMission(this)
         Logx.add(if (missionDone) "alarm silenced — mission complete" else "alarm cleared")
         updateNotification()
         overlay?.refresh()
@@ -872,8 +934,11 @@ class GateService : Service() {
     private fun shutdown() {
         Logx.add("gate stopped")
         alarmMode = false
+        alarmPaused = false
+        alarmResumeAtMs = 0L
         Prefs.alarmRinging = false
         AlarmRinger.stop()
+        Alerts.cancelWakeMission(this)
         handler.removeCallbacksAndMessages(null)
         removeOverlay()
         unregisterScreenReceiver()

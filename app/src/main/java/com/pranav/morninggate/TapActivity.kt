@@ -54,6 +54,9 @@ class TapActivity : Activity() {
     override fun onResume() {
         super.onResume()
         GateService.onAuxResume()
+        if (mode == MODE_USE && GateService.pauseAlarmForCheck()) {
+            Toast.makeText(this, "Alarm paused for 30 s — complete the check", Toast.LENGTH_SHORT).show()
+        }
         handled = false
         when {
             !Checks.isNfcAvailable(this) -> setStatus("This phone has no NFC reader.")

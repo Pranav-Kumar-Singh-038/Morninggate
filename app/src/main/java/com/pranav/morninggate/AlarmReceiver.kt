@@ -67,6 +67,7 @@ class AlarmReceiver : BroadcastReceiver() {
     private fun releaseAlarm(context: Context) {
         Prefs.alarmRinging = false
         AlarmRinger.stop()
+        Alerts.cancelWakeMission(context)
         if (Prefs.manageA11y) A11y.disable(context)
         Gate.clearDwellStarts()
         ScheduleEngine.cancelHeartbeat(context)

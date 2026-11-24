@@ -123,6 +123,9 @@ class ScanActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         GateService.onAuxResume()
+        if (mode == MODE_USE && GateService.pauseAlarmForCheck()) {
+            Toast.makeText(this, "Alarm paused for 30 s — complete the check", Toast.LENGTH_SHORT).show()
+        }
         if (hasCamera()) {
             permButton.visibility = View.GONE
             bindCamera()
