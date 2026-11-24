@@ -391,6 +391,37 @@ class GateShellView(context: Context) : FrameLayout(context) {
                 }
             }
 
+            if (t.crits.isEmpty()) {
+                row.addView(TextView(context).apply {
+                    text = if (t.done) {
+                        "✓  No checks — marked done"
+                    } else {
+                        "No checks — finish it, then mark it done."
+                    }
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setTextColor(
+                        if (t.done) 0xFF66D19E.toInt() else 0xFF9AA4B2.toInt()
+                    )
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(5) })
+
+                if (!t.done) {
+                    row.addView(Button(context).apply {
+                        text = "Mark done"
+                        setOnClickListener {
+                            Gate.markTaskDone(t.id)
+                            Logx.add("task done by hand: ${t.name}")
+                            GateService.onTaskManuallyDone()
+                        }
+                    }, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dp(8) })
+                }
+            }
+
             if (t.dwellPending && !t.dwellStarted) {
                 val start = TextView(context).apply {
                     text = "▶  Start dwell"

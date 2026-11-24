@@ -22,8 +22,9 @@ import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Task editor: name plus one or more completion checks. Two or more checks on
- * one task is "hard mode". Config is only editable while the gate is idle.
+ * Task editor: name plus zero or more completion checks. Two or more checks on
+ * one task is "hard mode"; a task with no checks is finished by hand on the
+ * gate screen. Config is only editable while the gate is idle.
  */
 class TaskEditActivity : Activity() {
 
@@ -159,14 +160,19 @@ class TaskEditActivity : Activity() {
         col.addView(
             body(
                 "When on, the phone rings loudly at the wake time (${Format.minutes(Prefs.startMinutes)}) " +
-                    "and only stops once this task's checks are verified. Dwell can't be used here — " +
-                    "you'd be asleep, which is the whole point. The gate itself arms automatically " +
-                    "at the wake time."
+                    "and only stops once this task's checks are verified — or, for a task with no " +
+                    "checks, once you mark it done. Dwell can't be used here — you'd be asleep, " +
+                    "which is the whole point. The gate itself arms automatically at the wake time."
             )
         )
 
         col.addView(header("Completion checks"))
-        col.addView(body("Every check must be verified in the morning. Two or more checks on one task = hard mode."))
+        col.addView(
+            body(
+                "Every check must be verified in the morning. Two or more checks on one task = hard " +
+                    "mode. You can also save a task with no checks and mark it done by hand."
+            )
+        )
 
         critsColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(critsColumn)
@@ -222,7 +228,9 @@ class TaskEditActivity : Activity() {
     private fun rebuildCrits() {
         critsColumn.removeAllViews()
         if (drafts.isEmpty()) {
-            critsColumn.addView(body("No checks yet — add at least one below."))
+            critsColumn.addView(
+                body("No checks — this task will show a Mark done button on the gate screen.")
+            )
             return
         }
         drafts.forEachIndexed { i, d ->
@@ -380,10 +388,6 @@ class TaskEditActivity : Activity() {
     private fun save() {
         saveDraftValues()
         val name = nameEdit.text.toString().trim().ifEmpty { "Task" }
-        if (drafts.isEmpty()) {
-            toast("Add at least one completion check")
-            return
-        }
         val auto = autoSwitch.isChecked
         for (d in drafts) {
             val c = d.crit

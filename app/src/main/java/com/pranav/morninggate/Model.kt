@@ -141,7 +141,8 @@ object Model {
     }
 
     fun summary(context: Context, task: Task): String =
-        task.criteria.joinToString("  +  ") { critSummary(context, it) }
+        if (task.criteria.isEmpty()) "No checks — mark done by hand"
+        else task.criteria.joinToString("  +  ") { critSummary(context, it) }
 
     /** How a bound code is referred to in the UI: its name if it has one, else a payload preview. */
     fun codeRef(c: Criterion): String =

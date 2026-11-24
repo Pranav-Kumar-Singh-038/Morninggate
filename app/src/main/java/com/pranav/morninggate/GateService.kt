@@ -178,6 +178,11 @@ class GateService : Service() {
 
         fun isAlarmPaused(): Boolean = instance?.alarmPaused == true
 
+        /** A no-check task was tapped done on the gate or alarm screen. */
+        fun onTaskManuallyDone() {
+            instance?.onTaskManuallyDoneNow()
+        }
+
         fun alarmPauseRemainingSec(): Int {
             val svc = instance ?: return 0
             if (!svc.alarmPaused) return 0
@@ -856,6 +861,16 @@ class GateService : Service() {
         overlay?.refresh()
         handler.post { handleForeground(currentForeground) }
         if (Gate.allDone()) {
+            handler.postDelayed({ completeAndRelease() }, 900L)
+        }
+    }
+
+    /** A no-check task is done: refresh the screens, silence the alarm and release if finished. */
+    private fun onTaskManuallyDoneNow() {
+        updateNotification()
+        overlay?.refresh()
+        updateAlarmState()
+        if (!alarmMode && !releasing && Gate.allDone()) {
             handler.postDelayed({ completeAndRelease() }, 900L)
         }
     }

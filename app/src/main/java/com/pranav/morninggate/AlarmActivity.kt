@@ -263,6 +263,36 @@ class AlarmActivity : Activity() {
                     row.addView(actionsRow, alp)
                 }
             }
+            if (t.criteria.isEmpty()) {
+                row.addView(TextView(this).apply {
+                    text = if (Gate.taskDone(t)) {
+                        "✓  No checks — marked done"
+                    } else {
+                        "No checks — finish it, then mark it done."
+                    }
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setTextColor(
+                        if (Gate.taskDone(t)) 0xFF66D19E.toInt() else 0xFF9AA4B2.toInt()
+                    )
+                    setPadding(0, dp(5), 0, 0)
+                })
+                if (!Gate.taskDone(t)) {
+                    val mark = Button(this).apply {
+                        text = "Mark task done"
+                        setOnClickListener {
+                            Gate.markTaskDone(t.id)
+                            Logx.add("task done by hand: ${t.name}")
+                            GateService.onTaskManuallyDone()
+                            lastKey = null
+                            render()
+                        }
+                    }
+                    row.addView(mark, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dp(8) })
+                }
+            }
             missionColumn.addView(row, cardLp())
             rowRefs.add(Row(nameView, statuses))
         }

@@ -387,7 +387,8 @@ class MainActivity : Activity() {
                 row.addView(
                     body(
                         "⏰ Fires the wake alarm at ${Format.minutes(Prefs.startMinutes)} — the ring " +
-                            "stops only when this task's checks are verified.",
+                            "stops when this task's checks are verified, or when you mark it done " +
+                            "if it has no checks.",
                         11f,
                         0xFFFFC46B.toInt()
                     )

@@ -166,6 +166,15 @@ object Gate {
         if (done.add(key(taskId, idx))) persist()
     }
 
+    /** A task with no checks is finished by an explicit tap, not by a verifier. */
+    private fun manualKey(taskId: String): String = "$taskId:manual"
+
+    fun isTaskMarkedDone(taskId: String): Boolean = done.contains(manualKey(taskId))
+
+    fun markTaskDone(taskId: String) {
+        if (done.add(manualKey(taskId))) persist()
+    }
+
     fun doneCrits(): Int = tasks.sumOf { t ->
         t.criteria.withIndex().count { isDone(t.id, it.index) }
     }
@@ -173,7 +182,8 @@ object Gate {
     fun totalCrits(): Int = tasks.sumOf { it.criteria.size }
 
     fun taskDone(t: Task): Boolean =
-        t.criteria.isNotEmpty() && t.criteria.withIndex().all { isDone(t.id, it.index) }
+        if (t.criteria.isEmpty()) isTaskMarkedDone(t.id)
+        else t.criteria.withIndex().all { isDone(t.id, it.index) }
 
     fun allDone(): Boolean = tasks.isNotEmpty() && tasks.all { taskDone(it) }
 
